@@ -1,7 +1,9 @@
 package archive
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 
 	"archive/zip"
@@ -34,18 +36,16 @@ func (w *Writer) Close() error {
 	return nil
 }
 
-func (w *Writer) AddArtifact(name string, content []byte) error {
+func (w *Writer) AddArtifact(name string, content *bytes.Reader) error {
 	f, err := w.zipWriter.Create(name)
 	if err != nil {
 		return err
 	}
-
-	written, err := f.Write(content)
+	_, err = io.Copy(f, content)
 	if err != nil {
 		return err
-	} else if written != len(content) {
-		return fmt.Errorf("partial write %d/%dB", written, len(content))
 	}
+
 	return nil
 }
 
