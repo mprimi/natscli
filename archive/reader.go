@@ -2,6 +2,7 @@ package archive
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -36,6 +37,19 @@ func (r *Reader) GetFile(name string) (io.ReadCloser, uint64, error) {
 		return nil, 0, err
 	}
 	return reader, f.UncompressedSize64, nil
+}
+
+func (r *Reader) Get(name string, v any) error {
+	f, _, err := r.GetFile(name)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(f)
+	err = decoder.Decode(v)
+	if err != nil {
+		return fmt.Errorf("failed to decode: %w", err)
+	}
+	return nil
 }
 
 func NewReader(archivePath string) (*Reader, error) {

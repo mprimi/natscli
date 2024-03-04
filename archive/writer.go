@@ -2,6 +2,7 @@ package archive
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -33,6 +34,8 @@ func (w *Writer) Close() error {
 		}
 	}
 
+	// TODO add index
+
 	return nil
 }
 
@@ -45,6 +48,27 @@ func (w *Writer) AddArtifact(name string, content *bytes.Reader) error {
 	if err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func (w *Writer) Add(artifact any, tags ...*Tag) error {
+	name, err := createFilenameFromTags(tags)
+	if err != nil {
+		return fmt.Errorf("failed to create file name: %w", err)
+	}
+	f, err := w.zipWriter.Create(name)
+	if err != nil {
+		return fmt.Errorf("failed to create file in archive: %w", err)
+	}
+	encoder := json.NewEncoder(f)
+	encoder.SetIndent("", "  ")
+	err = encoder.Encode(artifact)
+	if err != nil {
+		return fmt.Errorf("failed to encode: %w", err)
+	}
+
+	// TODO add to index
 
 	return nil
 }
