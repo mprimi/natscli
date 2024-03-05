@@ -36,6 +36,18 @@ func Test_createFilenameFromTags(t *testing.T) {
 			"artifact__account_A1__connections.json",
 			false,
 		},
+		{
+			"manifest",
+			[]*Tag{internalTagManifest()},
+			"manifest.json",
+			false,
+		},
+		{
+			"manifest with other tag",
+			[]*Tag{internalTagManifest(), TagServer("foo")},
+			"",
+			true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

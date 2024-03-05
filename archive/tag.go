@@ -28,11 +28,32 @@ const (
 	subzArtifactType     string = "subs"
 	jszArtifactType      string = "jetstream"
 	accountzArtifactType string = "accounts"
+	manifestArtifactType string = "manifest"
+)
+
+const (
+	ManifestFileName string = "manifest.json"
 )
 
 func createFilenameFromTags(tags []*Tag) (string, error) {
+
+	// Special files whose name is handled differently
+	if len(tags) == 1 {
+		tag := tags[0]
+
+		// Manifest file
+		if tag.Name == typeTagLabel && tag.Value == manifestArtifactType {
+			return ManifestFileName, nil
+		}
+	}
+
 	var accountTag, clusterTag, serverTag, typeTag *Tag
 	for _, tag := range tags {
+
+		if tag.Name == typeTagLabel && tag.Value == manifestArtifactType {
+			return "", fmt.Errorf("cannot use internal manifest tag combined with other tags")
+		}
+
 		if tag.Name == accountTagLabel {
 			if accountTag != nil {
 				return "", fmt.Errorf("duplicate acount tag (values: %s and %s)", tag.Value, accountTag.Value)
@@ -117,6 +138,10 @@ func TagJetStream() *Tag {
 
 func TagAccounts() *Tag {
 	return TagArtifactType(accountzArtifactType)
+}
+
+func internalTagManifest() *Tag {
+	return TagArtifactType(manifestArtifactType)
 }
 
 func TagServer(serverName string) *Tag {

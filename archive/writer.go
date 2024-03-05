@@ -11,12 +11,18 @@ import (
 )
 
 type Writer struct {
-	path       string
-	fileWriter *os.File
-	zipWriter  *zip.Writer
+	path        string
+	fileWriter  *os.File
+	zipWriter   *zip.Writer
+	manifestMap map[string][]*Tag
 }
 
 func (w *Writer) Close() error {
+
+	err := w.Add(w.manifestMap, internalTagManifest())
+	if err != nil {
+		return fmt.Errorf("failed to add manifest")
+	}
 
 	if w.zipWriter != nil {
 		err := w.zipWriter.Close()
@@ -55,8 +61,14 @@ func (w *Writer) AddArtifact(name string, content *bytes.Reader) error {
 func (w *Writer) Add(artifact any, tags ...*Tag) error {
 	name, err := createFilenameFromTags(tags)
 	if err != nil {
-		return fmt.Errorf("failed to create file name: %w", err)
+		return fmt.Errorf("failed to create artifact name: %w", err)
 	}
+
+	_, exists := w.manifestMap[name]
+	if exists {
+		return fmt.Errorf("artifact with identical tags is already present")
+	}
+
 	f, err := w.zipWriter.Create(name)
 	if err != nil {
 		return fmt.Errorf("failed to create file in archive: %w", err)
@@ -68,7 +80,7 @@ func (w *Writer) Add(artifact any, tags ...*Tag) error {
 		return fmt.Errorf("failed to encode: %w", err)
 	}
 
-	// TODO add to index
+	w.manifestMap[name] = tags
 
 	return nil
 }
@@ -82,8 +94,9 @@ func NewWriter(archivePath string) (*Writer, error) {
 	zipWriter := zip.NewWriter(fileWriter)
 
 	return &Writer{
-		path:       archivePath,
-		fileWriter: fileWriter,
-		zipWriter:  zipWriter,
+		path:        archivePath,
+		fileWriter:  fileWriter,
+		zipWriter:   zipWriter,
+		manifestMap: make(map[string][]*Tag),
 	}, nil
 }

@@ -53,7 +53,7 @@ func TestArchiveCreateThenRead(t *testing.T) {
 		t.Fatalf("Failed to create archive: %s", err)
 	}
 
-	expectedArtifactsCount := len(files)
+	expectedArtifactsCount := len(files) + 1 // (+1 for manifest)
 	if expectedArtifactsCount != ar.artifactsCount() {
 		t.Fatalf("Wrong number of artifacts. Expected: %d actual: %d", expectedArtifactsCount, ar.artifactsCount())
 	}
@@ -202,8 +202,8 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 		"artifact__cluster_C1__cluster_info.json",
 		"artifact__cluster_C2__cluster_info.json",
 	}
-	expectedArtifactsCount := len(expectedFilesList)
-	if len(expectedFilesList) != ar.artifactsCount() {
+	expectedArtifactsCount := len(expectedFilesList) + 1 // +1 for manifest
+	if expectedArtifactsCount != ar.artifactsCount() {
 		t.Fatalf("Wrong number of artifacts. Expected: %d actual: %d", expectedArtifactsCount, ar.artifactsCount())
 	}
 

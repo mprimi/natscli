@@ -12,6 +12,7 @@ type Reader struct {
 	archiveReader *zip.ReadCloser
 	path          string
 	filesMap      map[string]*zip.File
+	manifestMap   map[string][]Tag
 }
 
 func (r *Reader) artifactsCount() int {
@@ -64,9 +65,50 @@ func NewReader(archivePath string) (*Reader, error) {
 		filesMap[f.Name] = f
 	}
 
+	manifestMap := make(map[string][]Tag, len(filesMap))
+	manifestFileName, err := createFilenameFromTags([]*Tag{internalTagManifest()})
+	if err != nil {
+		return nil, fmt.Errorf("failed to load manifest: %w", err)
+	}
+
+	manifestFile, exists := filesMap[manifestFileName]
+	if !exists {
+		return nil, fmt.Errorf("manifest file not found in archive")
+	}
+
+	manifestFileReader, err := manifestFile.Open()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open manifest: %w", err)
+	}
+
+	err = json.NewDecoder(manifestFileReader).Decode(&manifestMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load manifest: %w", err)
+	}
+
+	for fileName, _ := range manifestMap {
+		_, present := filesMap[fileName]
+		if !present {
+			return nil, fmt.Errorf("file %s is in manifest, but not present in archive", fileName)
+		}
+	}
+
+	for fileName, _ := range filesMap {
+		if fileName == ManifestFileName {
+			// Manifest is not present in manifest
+			continue
+		}
+
+		_, present := manifestMap[fileName]
+		if !present {
+			fmt.Printf("Warning: archive file %s is not present in manifest\n", fileName)
+		}
+	}
+
 	return &Reader{
 		path:          archivePath,
 		archiveReader: archiveReader,
 		filesMap:      filesMap,
+		manifestMap:   manifestMap,
 	}, nil
 }
