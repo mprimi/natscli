@@ -14,12 +14,31 @@ type Tag struct {
 const (
 	serverTagLabel  TagLabel = "server"
 	clusterTagLabel TagLabel = "cluster"
+	accountTagLabel TagLabel = "account"
 	typeTagLabel    TagLabel = "artifact_type"
 )
 
+const (
+	healtzArtifactType   string = "health"
+	varzArtifactType     string = "variables"
+	connzArtifactType    string = "connections"
+	routezArtifactType   string = "routes"
+	gatewayzArtifactType string = "gateways"
+	leafzArtifactType    string = "leafs"
+	subzArtifactType     string = "subs"
+	jszArtifactType      string = "jetstream"
+	accountzArtifactType string = "accounts"
+)
+
 func createFilenameFromTags(tags []*Tag) (string, error) {
-	var clusterTag, serverTag, typeTag *Tag
+	var accountTag, clusterTag, serverTag, typeTag *Tag
 	for _, tag := range tags {
+		if tag.Name == accountTagLabel {
+			if accountTag != nil {
+				return "", fmt.Errorf("duplicate acount tag (values: %s and %s)", tag.Value, accountTag.Value)
+			}
+			accountTag = tag
+		}
 		if tag.Name == clusterTagLabel {
 			if clusterTag != nil {
 				return "", fmt.Errorf("duplicate cluster tag (values: %s and %s)", tag.Value, clusterTag.Value)
@@ -39,6 +58,9 @@ func createFilenameFromTags(tags []*Tag) (string, error) {
 	}
 
 	label := "artifact"
+	if accountTag != nil {
+		label = fmt.Sprintf("%s__account_%s", label, accountTag.Value)
+	}
 	if clusterTag != nil {
 		label = fmt.Sprintf("%s__cluster_%s", label, clusterTag.Value)
 	}
@@ -54,37 +76,66 @@ func createFilenameFromTags(tags []*Tag) (string, error) {
 	return label, nil
 }
 
-func ClusterInfoTag() *Tag {
+func TagArtifactType(artifactType string) *Tag {
 	return &Tag{
 		Name:  typeTagLabel,
-		Value: "cluster_info",
+		Value: artifactType,
 	}
 }
 
-func ServerInfoTag() *Tag {
-	return &Tag{
-		Name:  typeTagLabel,
-		Value: "server_info",
-	}
+func TagHealth() *Tag {
+	return TagArtifactType(healtzArtifactType)
 }
 
-func ServerHealthTag() *Tag {
-	return &Tag{
-		Name:  typeTagLabel,
-		Value: "health",
-	}
+func TagServerVars() *Tag {
+	return TagArtifactType(varzArtifactType)
 }
 
-func ServerTag(serverName string) *Tag {
+func TagConnections() *Tag {
+	return TagArtifactType(connzArtifactType)
+}
+
+func TagRoutes() *Tag {
+	return TagArtifactType(routezArtifactType)
+}
+
+func TagGateways() *Tag {
+	return TagArtifactType(gatewayzArtifactType)
+}
+
+func TagLeafs() *Tag {
+	return TagArtifactType(leafzArtifactType)
+}
+
+func TagSubs() *Tag {
+	return TagArtifactType(subzArtifactType)
+}
+
+func TagJetStream() *Tag {
+	return TagArtifactType(jszArtifactType)
+}
+
+func TagAccounts() *Tag {
+	return TagArtifactType(accountzArtifactType)
+}
+
+func TagServer(serverName string) *Tag {
 	return &Tag{
 		Name:  serverTagLabel,
 		Value: serverName,
 	}
 }
 
-func ClusterTag(clusterName string) *Tag {
+func TagCluster(clusterName string) *Tag {
 	return &Tag{
 		Name:  clusterTagLabel,
 		Value: clusterName,
+	}
+}
+
+func TagAccount(accountName string) *Tag {
+	return &Tag{
+		Name:  accountTagLabel,
+		Value: accountName,
 	}
 }

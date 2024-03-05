@@ -128,7 +128,7 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 			BazBytes:  make([]byte, 100),
 		}
 		rng.Read(ci.BazBytes)
-		err = aw.Add(ci, ClusterTag(clusterName), ClusterInfoTag())
+		err = aw.Add(ci, TagCluster(clusterName), TagArtifactType("cluster_info"))
 		if err != nil {
 			t.Fatalf("Failed to add cluster info: %s", err)
 		}
@@ -143,7 +143,7 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 			}
 			rng.Read(hs.BazBytes)
 
-			err = aw.Add(hs, ClusterTag(clusterName), ServerTag(serverName), ServerHealthTag())
+			err = aw.Add(hs, TagCluster(clusterName), TagServer(serverName), TagHealth())
 			if err != nil {
 				t.Fatalf("Failed to add server health: %s", err)
 			}
@@ -156,7 +156,7 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 			}
 			rng.Read(si.BazBytes)
 
-			err = aw.Add(si, ClusterTag(clusterName), ServerTag(serverName), ServerInfoTag())
+			err = aw.Add(si, TagCluster(clusterName), TagServer(serverName), TagArtifactType("server_info"))
 			if err != nil {
 				t.Fatalf("Failed to add server health: %s", err)
 			}
