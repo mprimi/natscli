@@ -35,66 +35,88 @@ const (
 	ManifestFileName string = "manifest.json"
 )
 
+const fileNamePrefix = "artifact"
+const separator = "__"
+
+var specialFilesTagMap = map[Tag]string{
+	*internalTagManifest(): "manifest.json",
+}
+
 func createFilenameFromTags(tags []*Tag) (string, error) {
 
-	// Special files whose name is handled differently
-	if len(tags) == 1 {
+	if len(tags) < 1 {
+		return "", fmt.Errorf("at least one tag is required")
+	} else if len(tags) == 1 {
+		// Single tag provided, is it one that has a special handling?
 		tag := tags[0]
-
-		// Manifest file
-		if tag.Name == typeTagLabel && tag.Value == manifestArtifactType {
-			return ManifestFileName, nil
+		fileName, isSpecialTag := specialFilesTagMap[*tag]
+		if isSpecialTag {
+			// Short-circuit and return the matching filename
+			return fileName, nil
 		}
 	}
 
-	var accountTag, clusterTag, serverTag, typeTag *Tag
+	// Tags that get composed and combined in the filename
+	dimensionTagsMap := map[TagLabel]*Tag{
+		accountTagLabel: nil,
+		clusterTagLabel: nil,
+		serverTagLabel:  nil,
+		typeTagLabel:    nil,
+	}
+
+	// Order in which 'dimension' tags appear in the name and format string
+	dimensionTagsOrder := []struct {
+		label          TagLabel
+		filenameFormat string
+	}{
+		{accountTagLabel, "account_%s"},
+		{clusterTagLabel, "cluster_%s"},
+		{serverTagLabel, "server_%s"},
+		{typeTagLabel, "%s"},
+	}
+
 	for _, tag := range tags {
 
-		if tag.Name == typeTagLabel && tag.Value == manifestArtifactType {
-			return "", fmt.Errorf("cannot use internal manifest tag combined with other tags")
+		// The 'special' tags should not be mixed with the rest
+		if _, present := specialFilesTagMap[*tag]; present {
+			return "", fmt.Errorf("tag '%s' is special and should not be combined with other tags", tag.Name)
 		}
 
-		if tag.Name == accountTagLabel {
-			if accountTag != nil {
-				return "", fmt.Errorf("duplicate acount tag (values: %s and %s)", tag.Value, accountTag.Value)
+		existingTag, isDimensionTag := dimensionTagsMap[tag.Name]
+
+		if isDimensionTag {
+			// If it's a dimension tag, save it
+			if existingTag != nil {
+				// Dimension tags can only have at most one value per file
+				return "", fmt.Errorf("duplicate tag %s", tag.Name)
 			}
-			accountTag = tag
-		}
-		if tag.Name == clusterTagLabel {
-			if clusterTag != nil {
-				return "", fmt.Errorf("duplicate cluster tag (values: %s and %s)", tag.Value, clusterTag.Value)
-			}
-			clusterTag = tag
-		} else if tag.Name == serverTagLabel {
-			if serverTag != nil {
-				return "", fmt.Errorf("duplicate server tag (values: %s and %s)", tag.Value, serverTag.Value)
-			}
-			serverTag = tag
-		} else if tag.Name == typeTagLabel {
-			if typeTag != nil {
-				return "", fmt.Errorf("duplicate artifact type tag (values: %s and %s)", tag.Value, typeTag.Value)
-			}
-			typeTag = tag
+			fmt.Printf("Found dimension tag: %s=%s\n", tag.Name, tag.Value)
+			dimensionTagsMap[tag.Name] = tag
+
+		} else {
+			// Store other (non-dimension) tags
+			// TODO
 		}
 	}
 
-	label := "artifact"
-	if accountTag != nil {
-		label = fmt.Sprintf("%s__account_%s", label, accountTag.Value)
-	}
-	if clusterTag != nil {
-		label = fmt.Sprintf("%s__cluster_%s", label, clusterTag.Value)
-	}
-	if serverTag != nil {
-		label = fmt.Sprintf("%s__server_%s", label, serverTag.Value)
-	}
-	if typeTag != nil {
-		label = fmt.Sprintf("%s__%s", label, typeTag.Value)
+	// TODO do some checking
+	// Cannot be stream and consumer
+	// Cannot be missing a type
+	// Must have at least one dimension or at least one custom tag
+
+	var name = fileNamePrefix
+	for _, dimensionTagOption := range dimensionTagsOrder {
+		dimensionTag := dimensionTagsMap[dimensionTagOption.label]
+		if dimensionTag != nil {
+			name = fmt.Sprintf("%s%s"+dimensionTagOption.filenameFormat, name, separator, dimensionTag.Value)
+		}
 	}
 
-	label = label + ".json"
+	//TODO could set suffix based on type. For now, all JSON.
+	name = name + ".json"
 
-	return label, nil
+	fmt.Printf("Created filename: %s\n", name)
+	return name, nil
 }
 
 func TagArtifactType(artifactType string) *Tag {

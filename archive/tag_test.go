@@ -37,6 +37,12 @@ func Test_createFilenameFromTags(t *testing.T) {
 			false,
 		},
 		{
+			"custom type",
+			[]*Tag{TagAccount("A1"), TagArtifactType("snapshot")},
+			"artifact__account_A1__snapshot.json",
+			false,
+		},
+		{
 			"manifest",
 			[]*Tag{internalTagManifest()},
 			"manifest.json",
@@ -45,6 +51,12 @@ func Test_createFilenameFromTags(t *testing.T) {
 		{
 			"manifest with other tag",
 			[]*Tag{internalTagManifest(), TagServer("foo")},
+			"",
+			true,
+		},
+		{
+			"no tags",
+			[]*Tag{},
 			"",
 			true,
 		},
