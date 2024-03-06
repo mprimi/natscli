@@ -2,6 +2,7 @@ package archive
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"math/rand"
 	"os"
@@ -95,16 +96,16 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 
 	clusters := map[string][]string{
 		"C1": {
-			"S1",
-			"S2",
-			"S3",
+			"X",
+			"Y",
+			"Z",
 		},
 		"C2": {
-			"S1",
-			"S2",
-			"S3",
-			"S4",
-			"S5",
+			"A",
+			"B",
+			"C",
+			"D",
+			"E",
 		},
 	}
 
@@ -118,7 +119,11 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 	type DummyClusterInfo DummyRecord
 	type DummyServerInfo DummyRecord
 
+	expectedClusters := make([]string, 0, 2)
+	expectedServers := make([]string, 0, 8)
+
 	for clusterName, clusterServers := range clusters {
+		expectedClusters = append(expectedClusters, clusterName)
 
 		var err error
 		// Add one (dummy) cluster info for each cluster
@@ -134,6 +139,7 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 		}
 
 		for _, serverName := range clusterServers {
+			expectedServers = append(expectedServers, serverName)
 
 			// Add one (dummy) health stats for each server
 			hs := &DummyHealthStats{
@@ -181,23 +187,23 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 	}
 
 	expectedFilesList := []string{
-		"artifact__cluster_C1__server_S1__health.json",
-		"artifact__cluster_C1__server_S2__health.json",
-		"artifact__cluster_C1__server_S3__health.json",
-		"artifact__cluster_C2__server_S1__health.json",
-		"artifact__cluster_C2__server_S2__health.json",
-		"artifact__cluster_C2__server_S3__health.json",
-		"artifact__cluster_C2__server_S4__health.json",
-		"artifact__cluster_C2__server_S5__health.json",
+		"artifact__cluster_C1__server_X__health.json",
+		"artifact__cluster_C1__server_Y__health.json",
+		"artifact__cluster_C1__server_Z__health.json",
+		"artifact__cluster_C2__server_A__health.json",
+		"artifact__cluster_C2__server_B__health.json",
+		"artifact__cluster_C2__server_C__health.json",
+		"artifact__cluster_C2__server_D__health.json",
+		"artifact__cluster_C2__server_E__health.json",
 
-		"artifact__cluster_C1__server_S1__server_info.json",
-		"artifact__cluster_C1__server_S2__server_info.json",
-		"artifact__cluster_C1__server_S3__server_info.json",
-		"artifact__cluster_C2__server_S1__server_info.json",
-		"artifact__cluster_C2__server_S2__server_info.json",
-		"artifact__cluster_C2__server_S3__server_info.json",
-		"artifact__cluster_C2__server_S4__server_info.json",
-		"artifact__cluster_C2__server_S5__server_info.json",
+		"artifact__cluster_C1__server_X__server_info.json",
+		"artifact__cluster_C1__server_Y__server_info.json",
+		"artifact__cluster_C1__server_Z__server_info.json",
+		"artifact__cluster_C2__server_A__server_info.json",
+		"artifact__cluster_C2__server_B__server_info.json",
+		"artifact__cluster_C2__server_C__server_info.json",
+		"artifact__cluster_C2__server_D__server_info.json",
+		"artifact__cluster_C2__server_E__server_info.json",
 
 		"artifact__cluster_C1__cluster_info.json",
 		"artifact__cluster_C2__cluster_info.json",
@@ -223,8 +229,43 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 			t.Fatalf("Unexpected empty structure field for file %s", fileName)
 		}
 	}
+
+	uniqueAccountTags := ar.ListAccountTags()
+	if len(uniqueAccountTags) > 0 {
+		t.Fatalf("Expected 0 accounts, got %d: %v", len(uniqueAccountTags), uniqueAccountTags)
+	}
+
+	uniqueClusterTags := ar.ListClusterTags()
+	if len(expectedClusters) != len(uniqueClusterTags) {
+		t.Fatalf("Expected %d clusters, got %d: %v", len(expectedClusters), len(uniqueClusterTags), uniqueClusterTags)
+	}
+
+	uniqueServerTags := ar.ListServerTags()
+	if len(expectedServers) != len(uniqueServerTags) {
+		t.Fatalf("Expected %d servers, got %d: %v", len(expectedServers), len(uniqueServerTags), uniqueServerTags)
+	}
+
+	for _, serverTag := range ar.ListServerTags() {
+		var si DummyServerInfo
+		err := ar.Load(&si, &serverTag, TagArtifactType("server_info"))
+		if err != nil {
+			t.Fatalf("Failed to load server info artifact for server %s: %s", serverTag.Value, err)
+		}
+		if serverTag.Value != si.FooString {
+			t.Fatalf("Unexpected value '%s' (should be: '%s')", si.FooString, serverTag.Value)
+		}
+	}
+
+	var foo struct{}
+	if err = ar.Load(&foo, TagCluster("C1"), TagServer("A")); !errors.Is(err, ErrNoMatches) {
+		t.Fatalf("Expected error '%s', but got: '%s'", ErrNoMatches, err)
+	}
+	if err = ar.Load(&foo, TagHealth()); !errors.Is(err, ErrMultipleMatches) {
+		t.Fatalf("Expected error '%s', but got: '%s'", ErrMultipleMatches, err)
+	}
 }
 
 // TODO test writer overwrites existing file
 // TODO test creation in non-existing directory fails
 // TODO test adding twice a file with the same namew
+// TODO test with non-unique server name in different clusters
