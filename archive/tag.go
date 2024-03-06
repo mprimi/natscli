@@ -90,7 +90,6 @@ func createFilenameFromTags(tags []*Tag) (string, error) {
 				// Dimension tags can only have at most one value per file
 				return "", fmt.Errorf("duplicate tag %s", tag.Name)
 			}
-			fmt.Printf("Found dimension tag: %s=%s\n", tag.Name, tag.Value)
 			dimensionTagsMap[tag.Name] = tag
 
 		} else {
@@ -115,7 +114,6 @@ func createFilenameFromTags(tags []*Tag) (string, error) {
 	//TODO could set suffix based on type. For now, all JSON.
 	name = name + ".json"
 
-	fmt.Printf("Created filename: %s\n", name)
 	return name, nil
 }
 

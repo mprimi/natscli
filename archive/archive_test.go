@@ -55,8 +55,8 @@ func TestArchiveCreateThenRead(t *testing.T) {
 	}
 
 	expectedArtifactsCount := len(files) + 1 // (+1 for manifest)
-	if expectedArtifactsCount != ar.artifactsCount() {
-		t.Fatalf("Wrong number of artifacts. Expected: %d actual: %d", expectedArtifactsCount, ar.artifactsCount())
+	if expectedArtifactsCount != ar.rawFilesCount() {
+		t.Fatalf("Wrong number of artifacts. Expected: %d actual: %d", expectedArtifactsCount, ar.rawFilesCount())
 	}
 
 	for fileName, fileContent := range files {
@@ -209,8 +209,8 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 		"artifact__cluster_C2__cluster_info.json",
 	}
 	expectedArtifactsCount := len(expectedFilesList) + 1 // +1 for manifest
-	if expectedArtifactsCount != ar.artifactsCount() {
-		t.Fatalf("Wrong number of artifacts. Expected: %d actual: %d", expectedArtifactsCount, ar.artifactsCount())
+	if expectedArtifactsCount != ar.rawFilesCount() {
+		t.Fatalf("Wrong number of artifacts. Expected: %d actual: %d", expectedArtifactsCount, ar.rawFilesCount())
 	}
 
 	t.Logf("Listing archive contents:")

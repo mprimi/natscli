@@ -18,7 +18,7 @@ type Reader struct {
 	serverTags    []Tag
 }
 
-func (r *Reader) artifactsCount() int {
+func (r *Reader) rawFilesCount() int {
 	return len(r.archiveReader.File)
 }
 
@@ -31,6 +31,8 @@ func (r *Reader) Close() error {
 	return nil
 }
 
+// GetFile is a low-level API that returns a reader for the given filename, if it exists in the archive.
+// In most cases you should use Get or Load
 func (r *Reader) GetFile(name string) (io.ReadCloser, uint64, error) {
 	f, exists := r.filesMap[name]
 	if !exists {
@@ -43,6 +45,7 @@ func (r *Reader) GetFile(name string) (io.ReadCloser, uint64, error) {
 	return reader, f.UncompressedSize64, nil
 }
 
+// Get decodes the provided filename into the given value
 func (r *Reader) Get(name string, v any) error {
 	f, _, err := r.GetFile(name)
 	if err != nil {
@@ -56,14 +59,18 @@ func (r *Reader) Get(name string, v any) error {
 	return nil
 }
 
+// ListServerTags returns a list of unique server tags attached to files in the archive.
+// Keep in mind server names may not be unique across clusters!
 func (r *Reader) ListServerTags() []Tag {
 	return r.serverTags
 }
 
+// ListClusterTags returns a list of unique cluster tags attached to files in the archive.
 func (r *Reader) ListClusterTags() []Tag {
 	return r.clusterTags
 }
 
+// ListAccountTags returns a list of unique account tags attached to files in the archive.
 func (r *Reader) ListAccountTags() []Tag {
 	return r.accountTags
 }
@@ -71,10 +78,13 @@ func (r *Reader) ListAccountTags() []Tag {
 var ErrNoMatches = fmt.Errorf("no file matched the given query")
 var ErrMultipleMatches = fmt.Errorf("multiple files matched the given query")
 
+// Load queries the manifest and is expected to find a single matching artifact, which is loaded into the given value.
 func (r *Reader) Load(v any, queryTags ...*Tag) error {
+
 	//TODO this scanning is inefficient, could be made better by creating inverted indices during reader open
 
 	matchedFileNames := make([]string, 0, 1)
+
 	// Find manifest entry that matches all given query tags
 manifestSearchLoop:
 	for fileName, fileTags := range r.manifestMap {
