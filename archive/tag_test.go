@@ -15,37 +15,37 @@ func Test_createFilenameFromTags(t *testing.T) {
 		{
 			"server health",
 			[]*Tag{TagCluster("C1"), TagServer("S1"), TagHealth()},
-			"artifact__cluster_C1__server_S1__health.json",
+			"capture/artifact__cluster_C1__server_S1__health.json",
 			false,
 		},
 		{
 			"server info",
 			[]*Tag{TagCluster("C1"), TagServer("S1"), TagServerVars()},
-			"artifact__cluster_C1__server_S1__variables.json",
+			"capture/artifact__cluster_C1__server_S1__variables.json",
 			false,
 		},
 		{
 			"cluster info",
 			[]*Tag{TagCluster("C1"), TagArtifactType("cluster_info")},
-			"artifact__cluster_C1__cluster_info.json",
+			"capture/artifact__cluster_C1__cluster_info.json",
 			false,
 		},
 		{
 			"account connections",
 			[]*Tag{TagAccount("A1"), TagConnections()},
-			"artifact__account_A1__connections.json",
+			"capture/artifact__account_A1__connections.json",
 			false,
 		},
 		{
 			"custom type",
 			[]*Tag{TagAccount("A1"), TagArtifactType("snapshot")},
-			"artifact__account_A1__snapshot.json",
+			"capture/artifact__account_A1__snapshot.json",
 			false,
 		},
 		{
 			"manifest",
 			[]*Tag{internalTagManifest()},
-			"manifest.json",
+			"capture/manifest.json",
 			false,
 		},
 		{

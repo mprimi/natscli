@@ -36,11 +36,12 @@ const (
 	ManifestFileName string = "manifest.json"
 )
 
+const rootPrefix = "capture/"
 const fileNamePrefix = "artifact"
 const separator = "__"
 
 var specialFilesTagMap = map[Tag]string{
-	*internalTagManifest(): "manifest.json",
+	*internalTagManifest(): rootPrefix + "manifest.json",
 }
 
 func createFilenameFromTags(tags []*Tag) (string, error) {
@@ -115,7 +116,7 @@ func createFilenameFromTags(tags []*Tag) (string, error) {
 	}
 
 	//TODO could set suffix based on type. For now, all JSON.
-	name = name + ".json"
+	name = rootPrefix + name + ".json"
 
 	return name, nil
 }

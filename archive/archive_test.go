@@ -187,26 +187,26 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 	}
 
 	expectedFilesList := []string{
-		"artifact__cluster_C1__server_X__health.json",
-		"artifact__cluster_C1__server_Y__health.json",
-		"artifact__cluster_C1__server_Z__health.json",
-		"artifact__cluster_C2__server_A__health.json",
-		"artifact__cluster_C2__server_B__health.json",
-		"artifact__cluster_C2__server_C__health.json",
-		"artifact__cluster_C2__server_D__health.json",
-		"artifact__cluster_C2__server_E__health.json",
+		"capture/artifact__cluster_C1__server_X__health.json",
+		"capture/artifact__cluster_C1__server_Y__health.json",
+		"capture/artifact__cluster_C1__server_Z__health.json",
+		"capture/artifact__cluster_C2__server_A__health.json",
+		"capture/artifact__cluster_C2__server_B__health.json",
+		"capture/artifact__cluster_C2__server_C__health.json",
+		"capture/artifact__cluster_C2__server_D__health.json",
+		"capture/artifact__cluster_C2__server_E__health.json",
 
-		"artifact__cluster_C1__server_X__server_info.json",
-		"artifact__cluster_C1__server_Y__server_info.json",
-		"artifact__cluster_C1__server_Z__server_info.json",
-		"artifact__cluster_C2__server_A__server_info.json",
-		"artifact__cluster_C2__server_B__server_info.json",
-		"artifact__cluster_C2__server_C__server_info.json",
-		"artifact__cluster_C2__server_D__server_info.json",
-		"artifact__cluster_C2__server_E__server_info.json",
+		"capture/artifact__cluster_C1__server_X__server_info.json",
+		"capture/artifact__cluster_C1__server_Y__server_info.json",
+		"capture/artifact__cluster_C1__server_Z__server_info.json",
+		"capture/artifact__cluster_C2__server_A__server_info.json",
+		"capture/artifact__cluster_C2__server_B__server_info.json",
+		"capture/artifact__cluster_C2__server_C__server_info.json",
+		"capture/artifact__cluster_C2__server_D__server_info.json",
+		"capture/artifact__cluster_C2__server_E__server_info.json",
 
-		"artifact__cluster_C1__cluster_info.json",
-		"artifact__cluster_C2__cluster_info.json",
+		"capture/artifact__cluster_C1__cluster_info.json",
+		"capture/artifact__cluster_C2__cluster_info.json",
 	}
 	expectedArtifactsCount := len(expectedFilesList) + 1 // +1 for manifest
 	if expectedArtifactsCount != ar.rawFilesCount() {
