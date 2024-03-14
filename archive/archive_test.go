@@ -118,6 +118,8 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 	type DummyHealthStats DummyRecord
 	type DummyClusterInfo DummyRecord
 	type DummyServerInfo DummyRecord
+	type DummyStreamInfo DummyRecord
+	type DummyAccountInfo DummyRecord
 
 	expectedClusters := make([]string, 0, 2)
 	expectedServers := make([]string, 0, 8)
@@ -133,7 +135,7 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 			BazBytes:  make([]byte, 100),
 		}
 		rng.Read(ci.BazBytes)
-		err = aw.Add(ci, TagCluster(clusterName), TagArtifactType("cluster_info"))
+		err = aw.Add(ci, TagCluster(clusterName), TagServer(clusterServers[0]), TagArtifactType("cluster_info"))
 		if err != nil {
 			t.Fatalf("Failed to add cluster info: %s", err)
 		}
@@ -169,6 +171,41 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 		}
 	}
 
+	// Add account info
+	globalAccountName := "$G"
+	for _, serverName := range clusters["C1"] {
+
+		si := &DummyAccountInfo{
+			FooString: globalAccountName,
+			BarInt:    rng.Int(),
+			BazBytes:  make([]byte, 50),
+		}
+		rng.Read(si.BazBytes)
+		err = aw.Add(si, TagAccount(globalAccountName), TagServer(serverName), TagArtifactType("account_info"))
+		if err != nil {
+			t.Fatalf("Failed to add account info: %s", err)
+		}
+	}
+
+	// Add some stream artifacts
+	streamName := "ORDERS"
+	streamAccount := globalAccountName
+	streamReplicas := []string{"A", "B", "E"}
+	for _, streamReplicaServerName := range streamReplicas {
+		// Add one (dummy) health stats for each server
+		si := &DummyStreamInfo{
+			FooString: streamAccount + "_" + streamName + "_" + streamReplicaServerName,
+			BarInt:    rng.Int(),
+			BazBytes:  make([]byte, 50),
+		}
+		rng.Read(si.BazBytes)
+
+		err = aw.Add(si, TagAccount(streamAccount), TagServer(streamReplicaServerName), TagStream(streamName), TagArtifactType("stream_info"))
+		if err != nil {
+			t.Fatalf("Failed to add stream info: %s", err)
+		}
+	}
+
 	err = aw.Close()
 	if err != nil {
 		t.Fatalf("Error closing writer: %s", err)
@@ -187,26 +224,39 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 	}
 
 	expectedFilesList := []string{
-		"capture/artifact__cluster_C1__server_X__health.json",
-		"capture/artifact__cluster_C1__server_Y__health.json",
-		"capture/artifact__cluster_C1__server_Z__health.json",
-		"capture/artifact__cluster_C2__server_A__health.json",
-		"capture/artifact__cluster_C2__server_B__health.json",
-		"capture/artifact__cluster_C2__server_C__health.json",
-		"capture/artifact__cluster_C2__server_D__health.json",
-		"capture/artifact__cluster_C2__server_E__health.json",
+		// Server health
+		"capture/clusters/C1/server_X__health.json",
+		"capture/clusters/C1/server_Y__health.json",
+		"capture/clusters/C1/server_Z__health.json",
+		"capture/clusters/C2/server_A__health.json",
+		"capture/clusters/C2/server_B__health.json",
+		"capture/clusters/C2/server_C__health.json",
+		"capture/clusters/C2/server_D__health.json",
+		"capture/clusters/C2/server_E__health.json",
 
-		"capture/artifact__cluster_C1__server_X__server_info.json",
-		"capture/artifact__cluster_C1__server_Y__server_info.json",
-		"capture/artifact__cluster_C1__server_Z__server_info.json",
-		"capture/artifact__cluster_C2__server_A__server_info.json",
-		"capture/artifact__cluster_C2__server_B__server_info.json",
-		"capture/artifact__cluster_C2__server_C__server_info.json",
-		"capture/artifact__cluster_C2__server_D__server_info.json",
-		"capture/artifact__cluster_C2__server_E__server_info.json",
+		// Server info
+		"capture/clusters/C1/server_X__server_info.json",
+		"capture/clusters/C1/server_Y__server_info.json",
+		"capture/clusters/C1/server_Z__server_info.json",
+		"capture/clusters/C2/server_A__server_info.json",
+		"capture/clusters/C2/server_B__server_info.json",
+		"capture/clusters/C2/server_C__server_info.json",
+		"capture/clusters/C2/server_D__server_info.json",
+		"capture/clusters/C2/server_E__server_info.json",
 
-		"capture/artifact__cluster_C1__cluster_info.json",
-		"capture/artifact__cluster_C2__cluster_info.json",
+		// Cluster info
+		"capture/clusters/C1/server_X__cluster_info.json",
+		"capture/clusters/C2/server_A__cluster_info.json",
+
+		// Stream info
+		"capture/accounts/$G/streams/ORDERS/server_A__stream_info.json",
+		"capture/accounts/$G/streams/ORDERS/server_B__stream_info.json",
+		"capture/accounts/$G/streams/ORDERS/server_E__stream_info.json",
+
+		// Account info
+		"capture/accounts/$G/server_X__account_info.json",
+		"capture/accounts/$G/server_Y__account_info.json",
+		"capture/accounts/$G/server_Z__account_info.json",
 	}
 	expectedArtifactsCount := len(expectedFilesList) + 1 // +1 for manifest
 	if expectedArtifactsCount != ar.rawFilesCount() {
@@ -231,8 +281,10 @@ func TestArchiveCreateThenReadWithTags(t *testing.T) {
 	}
 
 	uniqueAccountTags := ar.ListAccountTags()
-	if len(uniqueAccountTags) > 0 {
-		t.Fatalf("Expected 0 accounts, got %d: %v", len(uniqueAccountTags), uniqueAccountTags)
+	if len(uniqueAccountTags) != 1 {
+		t.Fatalf("Expected 1 accounts, got %d: %v", len(uniqueAccountTags), uniqueAccountTags)
+	} else if uniqueAccountTags[0].Value != globalAccountName {
+		t.Fatalf("Expected account name %s, got %s", globalAccountName, uniqueAccountTags[0].Value)
 	}
 
 	uniqueClusterTags := ar.ListClusterTags()

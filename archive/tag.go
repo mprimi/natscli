@@ -33,15 +33,26 @@ const (
 )
 
 const (
-	ManifestFileName string = "manifest.json"
+	ManifestFileName string = "capture/manifest.json"
+	NoCluster        string = "unclustered"
 )
 
 const rootPrefix = "capture/"
-const fileNamePrefix = "artifact"
+const fileNamePrefix = "artifact__"
 const separator = "__"
 
+// Special tag that result in a special file path
 var specialFilesTagMap = map[Tag]string{
 	*internalTagManifest(): rootPrefix + "manifest.json",
+}
+
+// Special tags that get composed and combined in the filename
+var dimensionTagsNames = map[TagLabel]interface{}{
+	accountTagLabel: nil,
+	clusterTagLabel: nil,
+	serverTagLabel:  nil,
+	streamTagLabel:  nil,
+	typeTagLabel:    nil,
 }
 
 func createFilenameFromTags(tags []*Tag) (string, error) {
@@ -58,26 +69,13 @@ func createFilenameFromTags(tags []*Tag) (string, error) {
 		}
 	}
 
-	// Tags that get composed and combined in the filename
-	dimensionTagsMap := map[TagLabel]*Tag{
-		accountTagLabel: nil,
-		clusterTagLabel: nil,
-		serverTagLabel:  nil,
-		streamTagLabel:  nil,
-		typeTagLabel:    nil,
-	}
+	// "Dimension" tags are special:
+	// - Can have at most one value
+	// - They get combined to produce the file path
+	dimensionTagsMap := make(map[TagLabel]*Tag, len(tags))
 
-	// Order in which 'dimension' tags appear in the name and format string
-	dimensionTagsOrder := []struct {
-		label          TagLabel
-		filenameFormat string
-	}{
-		{accountTagLabel, "account_%s"},
-		{clusterTagLabel, "cluster_%s"},
-		{serverTagLabel, "server_%s"},
-		{streamTagLabel, "stream_%s"},
-		{typeTagLabel, "%s"},
-	}
+	// Capture non-dimension tags here (unused for now)
+	otherTags := make([]*Tag, 0, len(tags))
 
 	for _, tag := range tags {
 
@@ -86,33 +84,59 @@ func createFilenameFromTags(tags []*Tag) (string, error) {
 			return "", fmt.Errorf("tag '%s' is special and should not be combined with other tags", tag.Name)
 		}
 
-		existingTag, isDimensionTag := dimensionTagsMap[tag.Name]
-
-		if isDimensionTag {
-			// If it's a dimension tag, save it
-			if existingTag != nil {
-				// Dimension tags can only have at most one value per file
-				return "", fmt.Errorf("duplicate tag %s", tag.Name)
-			}
+		// Save dimension tags and other tags
+		_, isDimensionTag := dimensionTagsNames[tag.Name]
+		_, isDuplicateDimensionTag := dimensionTagsMap[tag.Name]
+		if isDimensionTag && isDuplicateDimensionTag {
+			return "", fmt.Errorf("multiple values not allowed for tag '%s'", tag.Name)
+		} else if isDimensionTag {
 			dimensionTagsMap[tag.Name] = tag
-
 		} else {
-			// Store other (non-dimension) tags
-			// TODO
+			otherTags = append(otherTags, tag)
 		}
 	}
 
-	// TODO do some checking
-	// Cannot be stream and consumer
-	// Cannot be missing a type
-	// Must have at least one dimension or at least one custom tag
+	if len(otherTags) > 0 {
+		// TODO for the moment, not expecting any of these to be actually set
+		panic(fmt.Sprintf("Unhandled tags: %v", otherTags))
+	}
 
-	var name = fileNamePrefix
-	for _, dimensionTagOption := range dimensionTagsOrder {
-		dimensionTag := dimensionTagsMap[dimensionTagOption.label]
-		if dimensionTag != nil {
-			name = fmt.Sprintf("%s%s"+dimensionTagOption.filenameFormat, name, separator, dimensionTag.Value)
+	accountTag, hasAccountTag := dimensionTagsMap[accountTagLabel], dimensionTagsMap[accountTagLabel] != nil
+	clusterTag, hasClusterTag := dimensionTagsMap[clusterTagLabel], dimensionTagsMap[clusterTagLabel] != nil
+	serverTag, hasServerTag := dimensionTagsMap[serverTagLabel], dimensionTagsMap[serverTagLabel] != nil
+	streamTag, hasStreamTag := dimensionTagsMap[streamTagLabel], dimensionTagsMap[streamTagLabel] != nil
+	typeTag, hasTypeTag := dimensionTagsMap[typeTagLabel], dimensionTagsMap[typeTagLabel] != nil
+
+	var name string
+
+	if !hasTypeTag {
+		return "", fmt.Errorf("missing required tag for artifact type")
+	} else if !hasServerTag {
+		return "", fmt.Errorf("missing required tag for source server")
+	} else if hasStreamTag && hasAccountTag {
+		// Stream artifact (which belongs to an account)
+		if hasClusterTag {
+			return "", fmt.Errorf("unexpected cluster tag for stream artifact")
 		}
+
+		name = fmt.Sprintf("accounts/%s/streams/%s/server_%s__%s", accountTag.Value, streamTag.Value, serverTag.Value, typeTag.Value)
+
+	} else if hasAccountTag {
+		// Account artifact (but not a stream)
+		name = fmt.Sprintf("accounts/%s/server_%s__%s", accountTag.Value, serverTag.Value, typeTag.Value)
+
+	} else if hasServerTag {
+		// Server artifact
+
+		clusterName := NoCluster
+		if hasClusterTag {
+			clusterName = clusterTag.Value
+		}
+		name = fmt.Sprintf("clusters/%s/server_%s__%s", clusterName, serverTag.Value, typeTag.Value)
+
+	} else {
+		// TODO may add more cases later, for now bomb if none of the above applies
+		panic(fmt.Sprintf("Unhandled tags combination: %+v", dimensionTagsMap))
 	}
 
 	//TODO could set suffix based on type. For now, all JSON.
