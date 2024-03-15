@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"math"
 
 	"github.com/choria-io/fisk"
 	"github.com/mprimi/natscli/archive"
@@ -53,27 +52,28 @@ func (c *PaAnalyzeCmd) analyze(_ *fisk.ParseContext) error {
 
 func checkServerVersions(r *archive.Reader) error {
 	var (
-		serverTags     = r.ListServerTags()
-		serverVersions = make(map[string][]string, len(serverTags))
+		serverTags           = r.ListServerTags()
+		serverVersions       = make([]string, 0)
+		versionsToServersMap = make(map[string][]string, len(serverTags))
 	)
 
 	for _, serverTag := range serverTags {
 		serverVarz := server.Varz{}
 		r.Load(&serverVarz, &serverTag, archive.TagServerVars())
-		_, exists := serverVersions[serverVarz.Version]
+		_, exists := versionsToServersMap[serverVarz.Version]
 		if !exists {
-			serverVersions[serverVarz.Version] = []string{}
+			versionsToServersMap[serverVarz.Version] = []string{}
+			serverVersions = append(serverVersions, serverVarz.Version)
 		}
-		serverVersions[serverVarz.Version] = append(serverVersions[serverVarz.Version], serverTag.Value)
+		versionsToServersMap[serverVarz.Version] = append(versionsToServersMap[serverVarz.Version], serverTag.Value)
 	}
 
 	if len(serverVersions) == 1 {
-		fmt.Println("✅ All servers are running the same version")
+		fmt.Printf("✅ All servers are running version %s\n", serverVersions[0])
 	} else {
-		fmt.Println("🔔 Warning: Servers are running different versions")
-		fmt.Println("--- SERVER VERSIONS ---")
-		for version, servers := range serverVersions {
-			fmt.Printf("%s: %v servers\n", version, servers)
+		fmt.Printf("🔔 Warning: Servers are running %d different versions\n", len(serverVersions))
+		for version, servers := range versionsToServersMap {
+			fmt.Printf("  %s: %v servers\n", version, servers)
 		}
 	}
 
@@ -82,57 +82,68 @@ func checkServerVersions(r *archive.Reader) error {
 
 func checkSlowConsumers(r *archive.Reader) error {
 	serverTags := r.ListServerTags()
+	totalSlowConsumers := int64(0)
 	for _, serverTag := range serverTags {
 		serverVarz := server.Varz{}
 		r.Load(&serverVarz, &serverTag, archive.TagServerVars())
 		if serverVarz.SlowConsumers > 0 {
 			fmt.Printf("🔔 Warning: %v slow consumers on server %v\n", serverVarz.SlowConsumers, serverTag.Value)
 		}
+		totalSlowConsumers += serverVarz.SlowConsumers
 	}
-	fmt.Println("✅ No slow consumers found")
+
+	if totalSlowConsumers == 0 {
+		fmt.Println("✅ No slow consumers found")
+	}
 	return nil
 }
 
 func checkClusterMemoryUsage(r *archive.Reader) error {
-	allGood := true
 	serverTags := r.ListServerTags()
+	serversOk, serversNotOk := 0, 0
 	for _, clusterTag := range r.ListClusterTags() {
 		cluster := clusterTag.Value
 		clusterMemoryUsage := make(map[string]float64, len(serverTags))
+		totalMemory := float64(0)
+		numServers := 0
 		for _, serverTag := range serverTags {
 			serverVarz := server.Varz{}
-			r.Load(&serverVarz, &serverTag, archive.TagServerVars())
+			err := r.Load(&serverVarz, &clusterTag, &serverTag, archive.TagServerVars())
+			if errors.Is(err, archive.ErrNoMatches) {
+				continue
+			} else if err != nil {
+				return fmt.Errorf("failed to load VARZ for server %s in cluster %s: %w", serverTag.Value, cluster, err)
+			}
 			clusterMemoryUsage[serverTag.Value] = float64(serverVarz.Mem)
+			totalMemory += float64(serverVarz.Mem)
+			numServers += 1
 		}
 
-		average := func(m map[string]float64) float64 {
+		meanMemoryUsage := totalMemory / float64(numServers)
+		threshold := meanMemoryUsage + (meanMemoryUsage * clusterMemoryUsageThresholdPercentage)
+		fmt.Printf("ℹ️ Cluster: %s average memory usage: %.2f MiB\n", cluster, meanMemoryUsage/(1024*1024))
 
-			var (
-				median float64
-				count  int
-			)
-
-			for _, v := range m {
-				median += v
-				count++
-			}
-
-			return median / float64(count)
-		}
-
-		medianMem := average(clusterMemoryUsage)
-		medianMemMb := medianMem / 1024 / 1024
-		for server, mem := range clusterMemoryUsage {
-			if math.Abs(mem-medianMem)/medianMem > clusterMemoryUsageThresholdPercentage {
-				allGood = false
-				memMb := mem / 1024 / 1024
-				fmt.Printf("🔔 server: %v memory usage (%.2fMb) exceeds cluster: %s median memory usage (%.2fMb) by over %.2f%% threshold\n", server, memMb, cluster, medianMemMb, clusterMemoryUsageThresholdPercentage*100)
+		for serverName, mem := range clusterMemoryUsage {
+			if mem > threshold {
+				fmt.Printf(
+					"🔔 server: %s in cluster %s memory usage: %.2f MiB is >%.0f%% above cluster mean usage: %.2f MiB\n",
+					serverName,
+					cluster,
+					mem/(1024*1024),
+					clusterMemoryUsageThresholdPercentage*100,
+					meanMemoryUsage/(1024*1024),
+				)
+				serversNotOk += 1
+			} else {
+				serversOk += 1
 			}
 		}
 	}
-	if allGood {
-		fmt.Println("✅ Cluster memory usage for all servers is within threshold")
+	icon := "✅"
+	if serversNotOk > 0 {
+		icon = "❌"
 	}
+	fmt.Printf("%s Found %d/%d servers with high memory usage (compared to cluster average)\n", icon, serversNotOk, serversOk+serversNotOk)
 
 	return nil
 }
@@ -147,82 +158,85 @@ func checkStreamConsistency(r *archive.Reader) error {
 		replicas    []*server.PeerInfo
 	}
 
-	var streamsConsistent = true
+	consistentCount, inconsistentCount := 0, 0
 
 	for _, accountTag := range r.ListAccountTags() {
 		for _, streamTag := range r.ListStreamTags() {
-			for _, clusterTag := range r.ListClusterTags() {
-				streams := make(map[string]streamConsistencyData)
-				for _, serverTag := range r.ListServerTags() {
-					streamDetail := server.StreamDetail{}
-					if err := r.Load(&streamDetail, &accountTag, &serverTag, &streamTag, &clusterTag); err != nil {
-						if errors.Is(err, archive.ErrNoMatches) {
-							continue
-						}
-						return err
-					}
-					streams[serverTag.Value] = streamConsistencyData{
-						stream:      streamDetail.Name,
-						serverId:    serverTag.Value,
-						numMessages: streamDetail.State.Msgs,
-						bytes:       streamDetail.State.Bytes,
-						leader:      streamDetail.Cluster.Leader,
-						replicas:    streamDetail.Cluster.Replicas,
-					}
-				}
+			streams := make(map[string]streamConsistencyData)
+			streamConsistent := true
 
-				var (
-					bytes  uint64
-					leader string
-				)
+			for _, serverTag := range r.ListServerTags() {
+				streamDetail := server.StreamDetail{}
+				if err := r.Load(&streamDetail, &accountTag, &serverTag, &streamTag); err != nil {
+					if errors.Is(err, archive.ErrNoMatches) {
+						continue
+					}
+					return err
+				}
+				streams[serverTag.Value] = streamConsistencyData{
+					stream:      streamDetail.Name,
+					serverId:    serverTag.Value,
+					numMessages: streamDetail.State.Msgs,
+					bytes:       streamDetail.State.Bytes,
+					leader:      streamDetail.Cluster.Leader,
+					replicas:    streamDetail.Cluster.Replicas,
+				}
+			}
 
-				// check if all replicas are current
-				for _, stream := range streams {
-					for _, replica := range stream.replicas {
-						if !replica.Current {
-							fmt.Printf("🔔 Warning: replica %v is not current for stream %v\n", replica.Name, stream.stream)
-							streamsConsistent = false
-						}
-					}
-				}
+			var (
+				bytes  uint64
+				leader string
+			)
 
-				// check if all streams have the same bytes
-				// TODO: add tolerances
-				for _, stream := range streams {
-					if bytes == 0 {
-						bytes = stream.bytes
-					}
-					if bytes != stream.bytes {
-						fmt.Printf("🔔 Warning: stream: %v has different bytes across servers\n", stream.stream)
-						for _, stream := range streams {
-							fmt.Printf("server: %v, bytes: %v\n", stream.serverId, stream.bytes)
-						}
-						streamsConsistent = false
-						break
+			// check if all replicas are current
+			for sourceServer, stream := range streams {
+				for _, replica := range stream.replicas {
+					if !replica.Current {
+						fmt.Printf("🔔 Warning: replica %s thinks that replica %s is not current on stream %s\n", sourceServer, replica.Name, stream.stream)
+						streamConsistent = false
 					}
 				}
-				// check if leader is consistent
-				for _, stream := range streams {
-					if leader == "" {
-						leader = stream.leader
-					}
-					if leader != stream.leader {
-						fmt.Printf("🔔 Warning: stream: %v has different leaders across servers\n", stream.stream)
-						for _, stream := range streams {
-							fmt.Printf("server: %v, leader: %v\n", stream.serverId, stream.leader)
-						}
-						streamsConsistent = false
-						break
-					}
+			}
+
+			// check if all streams have the same bytes
+			// TODO: add tolerances
+			for _, stream := range streams {
+				if bytes == 0 {
+					bytes = stream.bytes
 				}
+				if bytes != stream.bytes {
+					fmt.Printf("🔔 Warning: stream: %v has different bytes across servers\n", stream.stream)
+					streamConsistent = false
+					break
+				}
+			}
+			// check if leader is consistent
+			for _, stream := range streams {
+				if leader == "" {
+					leader = stream.leader
+				}
+				if leader != stream.leader {
+					fmt.Printf("🔔 Warning: stream: %v has different leaders across servers\n", stream.stream)
+					for _, stream := range streams {
+						fmt.Printf("server: %v, leader: %v\n", stream.serverId, stream.leader)
+					}
+					streamConsistent = false
+					break
+				}
+			}
+
+			if streamConsistent {
+				consistentCount += 1
+			} else {
+				inconsistentCount += 1
 			}
 		}
 	}
 
-	if streamsConsistent {
-		fmt.Println("✅ All streams are consistent across all replicas")
-	} else {
-		fmt.Println("❌ Warning: Streams are not consistent across all replicas")
+	icon := "✅"
+	if inconsistentCount > 0 {
+		icon = "❌"
 	}
+	fmt.Printf("%s Found %d/%d streams with potential issues\n", icon, inconsistentCount, inconsistentCount+consistentCount)
 	return nil
 }

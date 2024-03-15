@@ -144,6 +144,7 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 	defer aw.Close()
 
 	// discover servers
+	fmt.Printf("⏳ Broadcasting PING to discover servers... (this may take a few seconds)\n")
 	servers := []*server.ServerInfo{}
 	if err = doReqAsync(nil, "$SYS.REQ.SERVER.PING", 0, nc, func(b []byte) {
 		var apiResponse server.ServerAPIResponse
@@ -152,7 +153,7 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 		}
 		servers = append(servers, apiResponse.Server)
 	}); err != nil {
-		return err
+		return fmt.Errorf("failed to ping: %w", err)
 	}
 
 	// get data from all endpoints for all servers
@@ -168,21 +169,25 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 
 			var apiResponse CustomServerAPIResponse
 			if err = json.Unmarshal(apiResponseBytes, &apiResponse); err != nil {
-				return err
+				return fmt.Errorf("failed to unmarshal response to %s: %w", subject, err)
 			}
 
 			// remarshal to get the api response payload struct
 			var apiResponseDataBytes []byte
 			apiResponseDataBytes, err = json.Marshal(apiResponse.Data)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to marshall response to %s: %w", subject, err)
 			}
 
 			resp := reflect.New(reflect.TypeOf(endpoint.expectedStruct)).Interface()
 			if err = json.Unmarshal(apiResponseDataBytes, resp); err != nil {
-				return err
+				return fmt.Errorf("failed to unmarshal response %d data : %w", subject, err)
 			}
-			aw.Add(resp, archive.TagServer(serverInfo.Name), archive.TagCluster(serverInfo.Cluster), endpoint.typeTag)
+			err = aw.Add(resp, archive.TagServer(serverInfo.Name), archive.TagCluster(serverInfo.Cluster), endpoint.typeTag)
+			if err != nil {
+				return fmt.Errorf("failed to add response to %s to archive: %w", subject, err)
+
+			}
 		}
 	}
 	fmt.Printf("🔬 Collected data for %d servers\n", len(servers))
@@ -193,7 +198,9 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 		accountIdsSet   = make(map[string]struct{})
 	)
 
-	if err = doReqAsync(nil, "$SYS.REQ.SERVER.PING.ACCOUNTZ", 0, nc, func(b []byte) {
+	fmt.Printf("⏳ Discovering accounts...\n")
+
+	if err = doReqAsync(nil, "$SYS.REQ.SERVER.PING.ACCOUNTZ", len(servers), nc, func(b []byte) {
 		var apiResponse CustomServerAPIResponse
 		if err = json.Unmarshal(b, &apiResponse); err != nil {
 			panic(err)
@@ -228,6 +235,7 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 
 	// get account endpoint data
 	for accountId := range accountIdsSet {
+		fmt.Printf("⏳ Gathering account %s data...\n", accountId)
 		for _, endpoint := range accountEndpoints {
 			subject := fmt.Sprintf("$SYS.REQ.ACCOUNT.%s.%s", accountId, endpoint.name)
 
@@ -235,7 +243,7 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 			if err = doReqAsync(nil, subject, 1, nc, func(b []byte) {
 				apiResponseBytes = b
 			}); err != nil {
-				return err
+				return fmt.Errorf("failed to request %s: %w", subject, err)
 			}
 
 			var apiResponse CustomServerAPIResponse
@@ -261,16 +269,16 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 			}
 
 			// add to archive
-			if err = aw.Add(resp, archive.TagAccount(accountId), endpoint.typeTag); err != nil {
-				return err
+			if err = aw.Add(resp, archive.TagAccount(accountId), endpoint.typeTag, archive.TagServer(apiResponse.Server.Name)); err != nil {
+				return fmt.Errorf("failed to add response to %s to archive: %w", subject, err)
 			}
 		}
 	}
 	fmt.Printf("🔬 Collected data for %d accounts\n", len(accountIdsSet))
 
 	if !c.noStreamInfo {
-		streamsCollected := 0
 		for accountId := range accountIdsSet {
+			streamsCollected := 0
 			// skip system account
 			if accountId == systemAccountId {
 				continue
@@ -283,11 +291,13 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 				RaftGroups: true,
 			}
 
+			fmt.Printf("⏳ Discovering streams in account %s\n", accountId)
+
 			var serverResponsesBytes [][]byte
 			if err = doReqAsync(jszOptions, "$SYS.REQ.SERVER.PING.JSZ", 0, nc, func(bytePayload []byte) {
 				serverResponsesBytes = append(serverResponsesBytes, bytePayload)
 			}); err != nil {
-				return err
+				return fmt.Errorf("failed to request %s: %w", "?", err)
 			}
 
 			for _, serverResponseBytes := range serverResponsesBytes {
@@ -326,15 +336,15 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 					}
 
 					for _, sd := range ad.Streams {
-						if err = aw.Add(sd, archive.TagAccount(accountId), archive.TagCluster(sd.Cluster.Name), archive.TagServer(apiResponse.Server.Name), archive.TagStream(sd.Name)); err != nil {
-							return err
+						if err = aw.Add(sd, archive.TagAccount(accountId), archive.TagServer(apiResponse.Server.Name), archive.TagStream(sd.Name), archive.TagArtifactType("stream_details")); err != nil {
+							return fmt.Errorf("failed to add stream '%s' in account '%s' info: %w", sd.Name, ad.Name, err)
 						}
 						streamsCollected++
 					}
 				}
 			}
+			fmt.Printf("🔬 Collected %d streams in account %s\n", streamsCollected, accountId)
 		}
-		fmt.Printf("🔬 Collected %d streams\n", streamsCollected)
 	}
 
 	// print path to archive
