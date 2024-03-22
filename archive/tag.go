@@ -40,6 +40,7 @@ const (
 
 const rootPrefix = "capture/"
 const separator = "__"
+const captureLogName = rootPrefix + "capture.log"
 
 // Special tag that result in a special file path
 var specialFilesTagMap = map[Tag]string{

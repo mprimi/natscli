@@ -50,6 +50,7 @@ func (w *Writer) Close() error {
 
 // AddArtifact is a low-level API that adds bytes without adding to the index.
 // In most cases, don't use this and use Add instead.
+// TODO: make this private?
 func (w *Writer) AddArtifact(name string, content *bytes.Reader) error {
 	f, err := w.zipWriter.Create(name)
 	if err != nil {
@@ -102,6 +103,10 @@ func (w *Writer) Add(artifact any, tags ...*Tag) error {
 	w.manifestMap[name] = tags
 
 	return nil
+}
+
+func (w *Writer) AddCaptureLog(reader *bytes.Reader) error {
+	return w.AddArtifact(captureLogName, reader)
 }
 
 func NewWriter(archivePath string) (*Writer, error) {

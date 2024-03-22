@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,12 +21,7 @@ type PaGatherCmd struct {
 	noPrintProgress    bool
 	noServerEndpoints  bool
 	noAccountEndpoints bool
-}
-
-type Endpoint struct {
-	apiSuffix      string
-	expectedStruct any
-	typeTag        *archive.Tag
+	captureLogWriter   io.Writer
 }
 
 // CustomServerAPIResponse is a modified version of server.ServerAPIResponse that inhibits deserialization of the
@@ -36,7 +33,13 @@ type CustomServerAPIResponse struct {
 	Error  *server.ApiError   `json:"error,omitempty"`
 }
 
-var serverEndpoints = []Endpoint{
+type endpointCaptureConfig struct {
+	apiSuffix     string
+	responseValue any
+	typeTag       *archive.Tag
+}
+
+var serverEndpoints = []endpointCaptureConfig{
 	{
 		"VARZ",
 		server.Varz{},
@@ -84,7 +87,7 @@ var serverEndpoints = []Endpoint{
 	},
 }
 
-var accountEndpoints = []Endpoint{
+var accountEndpoints = []endpointCaptureConfig{
 	{
 		"CONNZ",
 		server.Connz{},
@@ -124,23 +127,30 @@ func configurePaGatherCommand(srv *fisk.CmdClause) {
 	gather.Flag("no-progress", "silence log messages detailing progress during gathering").UnNegatableBoolVar(&c.noPrintProgress)
 }
 
-// gather Overview of gathering strategy:
-//  1. Query $SYS.REQ.SERVER.PING to discover servers
-//     ··Foreach answer, save server name and ID
-//  2. Query $SYS.REQ.SERVER.PING.ACCOUNTZ to discover accounts
-//     ··Foreach answer, save list of known accounts
-//     ··Also track the system account name
-//  3. Foreach known server
-//     ··Foreach server endpoint
-//     ··Request $SYS.REQ.SERVER.<Server ID>.<Endpoint>, save the response
-//  4. Foreach known account
-//     ··Foreach server endpoint
-//     ····Foreach response to $SYS.REQ.ACCOUNT.<Account name>.<Endpoint>
-//     ······Save the response
-//  5. Foreach known account
-//     ··Foreach response to $SYS.REQ.SERVER.PING.JSZ filtered by account
-//     ····Foreach stream in response
-//     ······Save the stream details
+/*
+Overview of gathering strategy:
+
+ 1. Query $SYS.REQ.SERVER.PING to discover servers
+    ··Foreach answer, save server name and ID
+
+ 2. Query $SYS.REQ.SERVER.PING.ACCOUNTZ to discover accounts
+    ··Foreach answer, save list of known accounts
+    ··Also track the system account name
+
+ 3. Foreach known server
+    ··Foreach server endpoint
+    ··Request $SYS.REQ.SERVER.<Server ID>.<Endpoint>, save the response
+
+ 4. Foreach known account
+    ··Foreach server endpoint
+    ····Foreach response to $SYS.REQ.ACCOUNT.<Account name>.<Endpoint>
+    ······Save the response
+
+ 5. Foreach known account
+    ··Foreach response to $SYS.REQ.SERVER.PING.JSZ filtered by account
+    ····Foreach stream in response
+    ······Save the stream details
+*/
 func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 	// nats connection
 	nc, err := newNatsConn("", natsOpts()...)
@@ -154,12 +164,25 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 		c.archiveFilePath = filepath.Join(os.TempDir(), "archive.zip")
 	}
 
+	// Initialize buffer to capture gathering log
+	var captureLogBuffer bytes.Buffer
+	c.captureLogWriter = &captureLogBuffer
+
 	// Create an archive writer
 	aw, err := archive.NewWriter(c.archiveFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create archive: %w", err)
 	}
 	defer func() {
+		// Add the (buffered) gathering log to the archive
+		if c.captureLogWriter != nil {
+			err = aw.AddCaptureLog(bytes.NewReader(captureLogBuffer.Bytes()))
+			if err != nil {
+				fmt.Printf("Failed to add capture log artifact: %s", err)
+			}
+			c.captureLogWriter = nil
+		}
+
 		err := aw.Close()
 		if err != nil {
 			fmt.Printf("Failed to close archive: %s", err)
@@ -171,11 +194,11 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 	var serverInfoMap = make(map[string]*server.ServerInfo)
 
 	// Discover servers by broadcasting a PING and then waiting for responses
-	c.LogProgress("⏳ Broadcasting PING to discover servers... (this may take a few seconds)\n")
+	c.logProgress("⏳ Broadcasting PING to discover servers... (this may take a few seconds)")
 	err = doReqAsync(nil, "$SYS.REQ.SERVER.PING", 0, nc, func(b []byte) {
 		var apiResponse server.ServerAPIResponse
 		if err = json.Unmarshal(b, &apiResponse); err != nil {
-			fmt.Printf("Failed to deserialize PING response: %s", err)
+			c.logWarning("Failed to deserialize PING response: %s", err)
 			return
 		}
 
@@ -183,29 +206,29 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 
 		_, exists := serverInfoMap[apiResponse.Server.ID]
 		if exists {
-			fmt.Printf("Duplicate server %s (%s) response to PING, ignoring", serverId, serverName)
+			c.logWarning("Duplicate server %s (%s) response to PING, ignoring", serverId, serverName)
 			return
 		}
 
 		serverInfoMap[serverId] = apiResponse.Server
-		c.LogProgress("📣 Discovered server '%s' (%s)\n", serverName, serverId)
+		c.logProgress("📣 Discovered server '%s' (%s)", serverName, serverId)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to PING: %w", err)
 	}
-	c.LogProgress("ℹ️ Discovered %d servers\n", len(serverInfoMap))
+	c.logProgress("ℹ️ Discovered %d servers", len(serverInfoMap))
 
 	// Account name -> count of servers
 	var accountIdsToServersCountMap = make(map[string]int)
 	var systemAccount = ""
 
 	// Broadcast PING.ACCOUNTZ to discover accounts
-	c.LogProgress("⏳ Broadcasting PING to discover accounts... \n")
+	c.logProgress("⏳ Broadcasting PING to discover accounts... ")
 	err = doReqAsync(nil, "$SYS.REQ.SERVER.PING.ACCOUNTZ", len(serverInfoMap), nc, func(b []byte) {
 		var apiResponse CustomServerAPIResponse
 		err = json.Unmarshal(b, &apiResponse)
 		if err != nil {
-			fmt.Printf("Failed to deserialize ACCOUNTZ response, ignoring\n")
+			c.logWarning("Failed to deserialize ACCOUNTZ response, ignoring")
 			return
 		}
 
@@ -215,18 +238,18 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 		// We are discarding useful data, but limiting additional collection to a fixed set of nodes
 		// simplifies querying and analysis. Could always re-run gather if a new server just joined.
 		if _, serverKnown := serverInfoMap[serverId]; !serverKnown {
-			fmt.Printf("Ignoring ACCOUNTZ response from unknown server: %s\n", serverName)
+			c.logWarning("Ignoring ACCOUNTZ response from unknown server: %s", serverName)
 			return
 		}
 
 		var accountsResponse server.Accountz
 		err = json.Unmarshal(apiResponse.Data, &accountsResponse)
 		if err != nil {
-			fmt.Printf("Failed to deserialize PING.ACCOUNTZ response: %s\n", err)
+			c.logWarning("Failed to deserialize PING.ACCOUNTZ response: %s", err)
 			return
 		}
 
-		c.LogProgress("📣 Discovered %d accounts on server %s\n", len(accountsResponse.Accounts), serverName)
+		c.logProgress("📣 Discovered %d accounts on server %s", len(accountsResponse.Accounts), serverName)
 
 		// Track how many servers known any given account
 		for _, accountId := range accountsResponse.Accounts {
@@ -239,13 +262,13 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 
 		// Track system account (normally, only one for the entire ensemble)
 		if accountsResponse.SystemAccount == "" {
-			fmt.Printf("Server %s system account is not set\n", serverName)
+			c.logWarning("Server %s system account is not set", serverName)
 		} else if systemAccount == "" {
 			systemAccount = accountsResponse.SystemAccount
-			c.LogProgress("ℹ️ Discovered system account name: %s\n", systemAccount)
+			c.logProgress("ℹ️ Discovered system account name: %s", systemAccount)
 		} else if systemAccount != accountsResponse.SystemAccount {
 			// This should not happen under normal circumstances!
-			fmt.Printf("Multiple system accounts detected (%s, %s)\n", systemAccount, accountsResponse.SystemAccount)
+			c.logWarning("Multiple system accounts detected (%s, %s)", systemAccount, accountsResponse.SystemAccount)
 		} else {
 			// Known system account matches the one in the response, nothing to do
 		}
@@ -253,13 +276,13 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 	if err != nil {
 		return fmt.Errorf("failed to PING.ACCOUNTZ: %w", err)
 	}
-	c.LogProgress("ℹ️ Discovered %d accounts over %d servers\n", len(accountIdsToServersCountMap), len(serverInfoMap))
+	c.logProgress("ℹ️ Discovered %d accounts over %d servers", len(accountIdsToServersCountMap), len(serverInfoMap))
 
 	if c.noServerEndpoints {
-		c.LogProgress("Skipping servers endpoints data gathering \n")
+		c.logProgress("Skipping servers endpoints data gathering")
 	} else {
 		// For each known server, query a set of endpoints
-		c.LogProgress("⏳ Querying %d endpoints on %d known servers...\n", len(serverEndpoints), len(serverInfoMap))
+		c.logProgress("⏳ Querying %d endpoints on %d known servers...", len(serverEndpoints), len(serverInfoMap))
 		capturedCount := 0
 		for serverId, serverInfo := range serverInfoMap {
 			serverName := serverInfo.Name
@@ -267,16 +290,16 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 
 				subject := fmt.Sprintf("$SYS.REQ.SERVER.%s.%s", serverId, endpoint.apiSuffix)
 
-				endpointResponse := reflect.New(reflect.TypeOf(endpoint.expectedStruct)).Interface()
+				endpointResponse := reflect.New(reflect.TypeOf(endpoint.responseValue)).Interface()
 
 				responses, err := doReq(nil, subject, 1, nc)
 				if err != nil {
-					fmt.Printf("Failed to request %s from server %s: %s", endpoint.apiSuffix, serverName, err)
+					c.logWarning("Failed to request %s from server %s: %s", endpoint.apiSuffix, serverName, err)
 					continue
 				}
 
 				if len(responses) != 1 {
-					fmt.Printf("Unexpected number of responses to %s from server %s: %d", endpoint.apiSuffix, serverName, len(responses))
+					c.logWarning("Unexpected number of responses to %s from server %s: %d", endpoint.apiSuffix, serverName, len(responses))
 					continue
 				}
 
@@ -284,13 +307,13 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 
 				var apiResponse CustomServerAPIResponse
 				if err = json.Unmarshal(responseBytes, &apiResponse); err != nil {
-					fmt.Printf("Failed to deserialize %s response from server %s: %s", endpoint.apiSuffix, serverName, err)
+					c.logWarning("Failed to deserialize %s response from server %s: %s", endpoint.apiSuffix, serverName, err)
 					continue
 				}
 
 				err = json.Unmarshal(apiResponse.Data, endpointResponse)
 				if err != nil {
-					fmt.Printf("Failed to deserialize %s response data from server %s: %s", endpoint.apiSuffix, serverName, err)
+					c.logWarning("Failed to deserialize %s response data from server %s: %s", endpoint.apiSuffix, serverName, err)
 					continue
 				}
 
@@ -313,15 +336,15 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 				capturedCount += 1
 			}
 		}
-		c.LogProgress("ℹ️ Captured %d endpoint responses from %d servers\n", capturedCount, len(serverInfoMap))
+		c.logProgress("ℹ️ Captured %d endpoint responses from %d servers", capturedCount, len(serverInfoMap))
 	}
 
 	if c.noAccountEndpoints {
-		c.LogProgress("Skipping accounts endpoints data gathering \n")
+		c.logProgress("Skipping accounts endpoints data gathering")
 	} else {
 		// For each known account, query a set of endpoints
 		capturedCount := 0
-		c.LogProgress("⏳ Querying %d endpoints for %d known accounts...\n", len(accountEndpoints), len(accountIdsToServersCountMap))
+		c.logProgress("⏳ Querying %d endpoints for %d known accounts...", len(accountEndpoints), len(accountIdsToServersCountMap))
 		for accountId, serversCount := range accountIdsToServersCountMap {
 			for _, endpoint := range accountEndpoints {
 				subject := fmt.Sprintf("$SYS.REQ.ACCOUNT.%s.%s", accountId, endpoint.apiSuffix)
@@ -331,7 +354,7 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 					var apiResponse CustomServerAPIResponse
 					err := json.Unmarshal(b, &apiResponse)
 					if err != nil {
-						fmt.Printf("Failed to deserialize %s response for account %s: %s", endpoint.apiSuffix, accountId, err)
+						c.logWarning("Failed to deserialize %s response for account %s: %s", endpoint.apiSuffix, accountId, err)
 						return
 					}
 
@@ -341,26 +364,26 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 					// We are discarding useful data, but limiting additional collection to a fixed set of nodes
 					// simplifies querying and analysis. Could always re-run gather if a new server just joined.
 					if _, serverKnown := serverInfoMap[serverId]; !serverKnown {
-						fmt.Printf("Ignoring ACCOUNT.%s response from unknown server: %s\n", endpoint.apiSuffix, serverName)
+						c.logWarning("Ignoring ACCOUNT.%s response from unknown server: %s\n", endpoint.apiSuffix, serverName)
 						return
 					}
 
-					endpointResponse := reflect.New(reflect.TypeOf(endpoint.expectedStruct)).Interface()
+					endpointResponse := reflect.New(reflect.TypeOf(endpoint.responseValue)).Interface()
 					err = json.Unmarshal(apiResponse.Data, endpointResponse)
 					if err != nil {
-						fmt.Printf("Failed to deserialize ACCOUNT.%s response for account %s: %s\n", endpoint.apiSuffix, accountId, err)
+						c.logWarning("Failed to deserialize ACCOUNT.%s response for account %s: %s\n", endpoint.apiSuffix, accountId, err)
 						return
 					}
 
 					if _, isDuplicateResponse := endpointResponses[serverName]; isDuplicateResponse {
-						fmt.Printf("Ignoring duplicate ACCOUNT.%s response from server %s\n", endpoint.apiSuffix, serverName)
+						c.logWarning("Ignoring duplicate ACCOUNT.%s response from server %s", endpoint.apiSuffix, serverName)
 						return
 					}
 
 					endpointResponses[serverName] = endpointResponse
 				})
 				if err != nil {
-					fmt.Printf("Failed to request %s for account %s: %s\n", endpoint.apiSuffix, accountId, err)
+					c.logWarning("Failed to request %s for account %s: %s", endpoint.apiSuffix, accountId, err)
 					continue
 				}
 
@@ -381,14 +404,14 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 				}
 			}
 		}
-		c.LogProgress("ℹ️ Captured %d endpoint responses from %d accounts\n", capturedCount, len(accountIdsToServersCountMap))
+		c.logProgress("ℹ️ Captured %d endpoint responses from %d accounts", capturedCount, len(accountIdsToServersCountMap))
 	}
 
 	// Capture streams info using JSZ, unless configured to skip
 	if c.noStreamInfo {
-		c.LogProgress("Skipping streams data gathering \n")
+		c.logProgress("Skipping streams data gathering")
 	} else {
-		c.LogProgress("⏳ Gathering streams data... \n")
+		c.logProgress("⏳ Gathering streams data...")
 		capturedCount := 0
 		for accountId, numServers := range accountIdsToServersCountMap {
 
@@ -410,7 +433,7 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 				var apiResponse CustomServerAPIResponse
 				err := json.Unmarshal(b, &apiResponse)
 				if err != nil {
-					fmt.Printf("Failed to deserialize JSZ response for account %s: %s\n", accountId, err)
+					c.logWarning("Failed to deserialize JSZ response for account %s: %s", accountId, err)
 					return
 				}
 
@@ -420,37 +443,37 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 				// We are discarding useful data, but limiting additional collection to a fixed set of nodes
 				// simplifies querying and analysis. Could always re-run gather if a new server just joined.
 				if _, serverKnown := serverInfoMap[serverId]; !serverKnown {
-					fmt.Printf("Ignoring JSZ response from unknown server: %s\n", serverName)
+					c.logWarning("Ignoring JSZ response from unknown server: %s", serverName)
 					return
 				}
 
 				if _, isDuplicateResponse := jsInfoResponses[serverName]; isDuplicateResponse {
-					fmt.Printf("Ignoring duplicate JSZ response for account %s from server %s\n", accountId, serverName)
+					c.logWarning("Ignoring duplicate JSZ response for account %s from server %s", accountId, serverName)
 					return
 				}
 
 				jsInfoResponse := &server.JSInfo{}
 				err = json.Unmarshal(apiResponse.Data, jsInfoResponse)
 				if err != nil {
-					fmt.Printf("Failed to deserialize JSZ response data for account %s: %s\n", accountId, err)
+					c.logWarning("Failed to deserialize JSZ response data for account %s: %s", accountId, err)
 					return
 				}
 
 				if len(jsInfoResponse.AccountDetails) == 0 {
 					// No account details in response, don't bother saving this
-					//fmt.Printf("🐛 Skip JSZ response from %s, no accounts details\n", serverName)
+					//c.logWarning("🐛 Skip JSZ response from %s, no accounts details", serverName)
 					return
 				} else if len(jsInfoResponse.AccountDetails) > 1 {
 					// Server will respond with multiple accounts if the one specified in the request is not found
 					// https://github.com/nats-io/nats-server/pull/5229
-					//fmt.Printf("🐛 Skip JSZ response from %s, account not found\n", serverName)
+					//c.logWarning("🐛 Skip JSZ response from %s, account not found", serverName)
 					return
 				}
 
 				jsInfoResponses[serverName] = jsInfoResponse
 			})
 			if err != nil {
-				fmt.Printf("Failed to request JSZ for account %s: %s\n", accountId, err)
+				c.logWarning("Failed to request JSZ for account %s: %s", accountId, err)
 				continue
 			}
 
@@ -466,7 +489,7 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 
 					_, streamKnown := streamNamesMap[streamName]
 					if !streamKnown {
-						c.LogProgress("📣 Discovered stream %s in account %s\n", streamName, accountId)
+						c.logProgress("📣 Discovered stream %s in account %s", streamName, accountId)
 					}
 
 					tags := []*archive.Tag{
@@ -491,18 +514,31 @@ func (c *PaGatherCmd) gather(_ *fisk.ParseContext) error {
 				}
 			}
 
-			c.LogProgress("ℹ️ Discovered %d streams in account %s\n", len(streamNamesMap), accountId)
+			c.logProgress("ℹ️ Discovered %d streams in account %s", len(streamNamesMap), accountId)
 			capturedCount += len(streamNamesMap)
 
 		}
-		c.LogProgress("ℹ️ Discovered %d streams in %d accounts\n", capturedCount, len(accountIdsToServersCountMap))
+		c.logProgress("ℹ️ Discovered %d streams in %d accounts", capturedCount, len(accountIdsToServersCountMap))
 	}
 
 	return nil
 }
 
-func (c *PaGatherCmd) LogProgress(format string, args ...any) {
+// logProgress prints updates to the gathering process. It can be turned off to make capture less verbose.
+// Updates are also tee'd to the capture log
+func (c *PaGatherCmd) logProgress(format string, args ...any) {
 	if !c.noPrintProgress {
-		fmt.Printf(format, args...)
+		fmt.Printf(format+"\n", args...)
+	}
+	if c.captureLogWriter != nil {
+		_, _ = fmt.Fprintf(c.captureLogWriter, format+"\n", args...)
+	}
+}
+
+// logWarning prints non-fatal errors during the gathering process. Messages are also tee'd to the capture log
+func (c *PaGatherCmd) logWarning(format string, args ...any) {
+	fmt.Printf(format+"\n", args...)
+	if c.captureLogWriter != nil {
+		_, _ = fmt.Fprintf(c.captureLogWriter, format+"\n", args...)
 	}
 }
