@@ -48,7 +48,7 @@ func (s checkStatus) badge() string {
 
 const (
 	Skipped checkStatus = iota
-	Pass    checkStatus = iota
+	Pass
 	Fail
 	SomeIssues
 )
@@ -107,6 +107,22 @@ func (cmd *paAnalyzeCmd) analyze(_ *fisk.ParseContext) error {
 		{
 			"Lagging stream replicas",
 			cmd.checkLaggingStreamReplicas,
+		},
+		{
+			"CPU usage",
+			cmd.checkCpuUsage,
+		},
+		{
+			"High cardinality streams",
+			cmd.checkHighCardinalityStreams,
+		},
+		{
+			"High number of HA assets",
+			cmd.checkHighCardinalityHAAssets,
+		},
+		{
+			"Reserved resources usage",
+			cmd.checkResourceLimits,
 		},
 	}
 
@@ -422,6 +438,162 @@ func (cmd *paAnalyzeCmd) checkLaggingStreamReplicas(r *archive.Reader) (checkSta
 		cmd.logExamples(examples)
 		return SomeIssues, nil
 	}
+	return Pass, nil
+}
+
+const cpuUsageThreshold = 0.9 // Warn if any server is using more than 90% of the available CPU
+// checkCpuUsage checks the CPU usage of all servers and alerts if any server is using more than 90% of the available CPU
+func (cmd *paAnalyzeCmd) checkCpuUsage(r *archive.Reader) (checkStatus, error) {
+	serverTags := r.ListServerTags()
+	examples := newCollectionOfExamples(cmd.examplesLimit)
+
+	for _, serverTag := range serverTags {
+		serverName := serverTag.Value
+		var serverVarz server.Varz
+
+		if err := r.Load(&serverVarz, &serverTag, archive.TagServerVars()); errors.Is(err, archive.ErrNoMatches) {
+			cmd.logWarning("Artifact 'VARZ' is missing for server %s", serverName)
+			continue
+		} else if err != nil {
+			return Skipped, fmt.Errorf("failed to load VARZ for server %s: %w", serverName, err)
+		}
+
+		cpuUsageForASingleCore := serverVarz.CPU / float64(serverVarz.Cores)
+
+		if cpuUsageForASingleCore > cpuUsageThreshold {
+			examples.Addf("%s: %.0f%%", serverName, serverVarz.CPU)
+		}
+	}
+
+	if examples.Count() > 0 {
+		cmd.logIssue("Found servers with high CPU usage")
+		cmd.logExamples(examples)
+		return SomeIssues, nil
+	}
+
+	return Pass, nil
+}
+
+const highCardinalityStreamsThreshold = 1_000_000 // Warn if any stream has more than 1,000,000 unique subjects
+// checkHighCardinalityStreams checks the number of unique subjects in streams and alerts if any stream has a high number of unique subjects
+func (cmd *paAnalyzeCmd) checkHighCardinalityStreams(r *archive.Reader) (checkStatus, error) {
+	typeTag := archive.TagStreamDetails()
+	accountNames := r.GetAccountNames()
+	examples := newCollectionOfExamples(cmd.examplesLimit)
+
+	for _, accountName := range accountNames {
+		accountTag := archive.TagAccount(accountName)
+		streamNames := r.GetAccountStreamNames(accountName)
+
+		for _, streamName := range streamNames {
+			streamTag := archive.TagStream(streamName)
+
+			serverNames := r.GetStreamServerNames(accountName, streamName)
+			for _, serverName := range serverNames {
+				serverTag := archive.TagServer(serverName)
+
+				var streamDetails server.StreamDetail
+
+				if err := r.Load(&streamDetails, serverTag, accountTag, streamTag, typeTag); errors.Is(err, archive.ErrNoMatches) {
+					cmd.logWarning("Artifact 'STREAM_DETAILS' is missing for stream %s in account %s", streamName, accountName)
+					continue
+				} else if err != nil {
+					return Skipped, fmt.Errorf("failed to load STREAM_DETAILS for stream %s in account %s: %w", streamName, accountName, err)
+				}
+
+				if streamDetails.State.NumSubjects > highCardinalityStreamsThreshold {
+					examples.Addf("%s/%s: %d subjects", accountName, streamName, streamDetails.State.NumSubjects)
+				}
+			}
+		}
+	}
+
+	if examples.Count() > 0 {
+		cmd.logIssue("Found streams with high cardinality")
+		cmd.logExamples(examples)
+		return SomeIssues, nil
+	}
+
+	return Pass, nil
+}
+
+const haAssetsCardinalityThreshold = 1000 // Warn if any server has more than 1000 high availability assets
+// checkHighCardinalityStreams checks the number of high availability assets in servers and alerts if any server exceeds the threshold
+func (cmd *paAnalyzeCmd) checkHighCardinalityHAAssets(r *archive.Reader) (checkStatus, error) {
+	examples := newCollectionOfExamples(cmd.examplesLimit)
+
+	clusterTags := r.ListClusterTags()
+	for _, clusterTag := range clusterTags {
+		clusterName := clusterTag.Value
+		serverNames := r.GetClusterServerNames(clusterName)
+
+		for _, serverName := range serverNames {
+
+			var serverJSInfo server.JSInfo
+
+			if err := r.Load(&serverJSInfo, &clusterTag, archive.TagServer(serverName), archive.TagJetStream()); errors.Is(err, archive.ErrNoMatches) {
+				cmd.logWarning("Artifact 'JSZ' is missing for server %s cluster %s", serverName, clusterName)
+				continue
+			} else if err != nil {
+				return Skipped, fmt.Errorf("failed to load JSZ for server %s: %w", serverName, err)
+			}
+
+			if serverJSInfo.HAAssets > haAssetsCardinalityThreshold {
+				examples.Addf("%s: %d HA assets", serverName, serverJSInfo.HAAssets)
+			}
+		}
+	}
+
+	if examples.Count() > 0 {
+		cmd.logIssue("Found servers with high a large amount of HA assets")
+		cmd.logExamples(examples)
+		return SomeIssues, nil
+	}
+
+	return Pass, nil
+}
+
+const resourceLimitUsageThreshold = 0.90 // Warn if any server's memory/storage usage is 95% of reserved memory/storage
+// checkResourceLimits checks the memory and storage usage of all servers and alerts if usage is too close to the reserved amounts
+func (cmd *paAnalyzeCmd) checkResourceLimits(r *archive.Reader) (checkStatus, error) {
+	examples := newCollectionOfExamples(cmd.examplesLimit)
+
+	clusterTags := r.ListClusterTags()
+	for _, clusterTag := range clusterTags {
+		clusterName := clusterTag.Value
+
+		serverNames := r.GetClusterServerNames(clusterName)
+		for _, serverName := range serverNames {
+			var serverJSInfo server.JSInfo
+			if err := r.Load(&serverJSInfo, &clusterTag, archive.TagServer(serverName), archive.TagJetStream()); errors.Is(err, archive.ErrNoMatches) {
+				cmd.logWarning("Artifact 'JSZ' is missing for server %s cluster %s", serverName, clusterName)
+				continue
+			} else if err != nil {
+				return Skipped, fmt.Errorf("failed to load JSZ for server %s: %w", serverName, err)
+			}
+
+			if serverJSInfo.ReservedMemory > 0 {
+				memoryUsage := float64(serverJSInfo.Memory) / float64(serverJSInfo.ReservedMemory)
+				if memoryUsage > resourceLimitUsageThreshold {
+					examples.Addf("%s memory: usage: %dMb, reserved: %dMb", serverName, serverJSInfo.Memory/1024/1024, serverJSInfo.ReservedMemory/1024/1024)
+				}
+			}
+
+			if serverJSInfo.ReservedStore > 0 {
+				storageUsage := float64(serverJSInfo.Store) / float64(serverJSInfo.ReservedStore)
+				if storageUsage > resourceLimitUsageThreshold {
+					examples.Addf("%s storage: usage: %dMb, reserved: %dMb", serverName, serverJSInfo.Store/1024/1024, serverJSInfo.ReservedStore/1024/1024)
+				}
+			}
+		}
+	}
+
+	if examples.Count() > 0 {
+		cmd.logIssue("Found servers with high memory/storage usage")
+		cmd.logExamples(examples)
+		return SomeIssues, nil
+	}
+
 	return Pass, nil
 }
 
