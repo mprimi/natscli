@@ -101,7 +101,7 @@ func (cmd *paAnalyzeCmd) analyze(_ *fisk.ParseContext) error {
 			cmd.checkSlowConsumers,
 		},
 		{
-			"Memory usage",
+			"Cluster memory usage",
 			cmd.checkClusterMemoryUsageOutliers,
 		},
 		{
@@ -123,6 +123,22 @@ func (cmd *paAnalyzeCmd) analyze(_ *fisk.ParseContext) error {
 		{
 			"Reserved resources usage",
 			cmd.checkResourceLimits,
+		},
+		{
+			"Account limits",
+			cmd.checkAccountLimits,
+		},
+		{
+			"Stream limits",
+			cmd.checkStreamLimits,
+		},
+		{
+			"Meta cluster state",
+			cmd.checkMetaCluster,
+		},
+		{
+			"Routes and gateways",
+			cmd.checkRoutesAndGateways,
 		},
 	}
 
@@ -458,10 +474,10 @@ func (cmd *paAnalyzeCmd) checkCpuUsage(r *archive.Reader) (checkStatus, error) {
 			return Skipped, fmt.Errorf("failed to load VARZ for server %s: %w", serverName, err)
 		}
 
-		cpuUsageForASingleCore := serverVarz.CPU / float64(serverVarz.Cores)
+		averageCpuUtilization := serverVarz.CPU / float64(serverVarz.Cores)
 
-		if cpuUsageForASingleCore > cpuUsageThreshold {
-			examples.Addf("%s: %.0f%%", serverName, serverVarz.CPU)
+		if averageCpuUtilization > cpuUsageThreshold {
+			examples.Addf("%s: %.0f%%", serverName, averageCpuUtilization)
 		}
 	}
 
@@ -503,13 +519,14 @@ func (cmd *paAnalyzeCmd) checkHighCardinalityStreams(r *archive.Reader) (checkSt
 
 				if streamDetails.State.NumSubjects > highCardinalityStreamsThreshold {
 					examples.Addf("%s/%s: %d subjects", accountName, streamName, streamDetails.State.NumSubjects)
+					continue // no need to check other servers for this stream
 				}
 			}
 		}
 	}
 
 	if examples.Count() > 0 {
-		cmd.logIssue("Found streams with high cardinality")
+		cmd.logIssue("Found streams with high subjects cardinality")
 		cmd.logExamples(examples)
 		return SomeIssues, nil
 	}
@@ -565,7 +582,7 @@ func (cmd *paAnalyzeCmd) checkResourceLimits(r *archive.Reader) (checkStatus, er
 		serverNames := r.GetClusterServerNames(clusterName)
 		for _, serverName := range serverNames {
 			var serverJSInfo server.JSInfo
-			if err := r.Load(&serverJSInfo, &clusterTag, archive.TagServer(serverName), archive.TagJetStream()); errors.Is(err, archive.ErrNoMatches) {
+			if err := r.Load(&serverJSInfo, archive.TagCluster(clusterName), archive.TagServer(serverName), archive.TagJetStream()); errors.Is(err, archive.ErrNoMatches) {
 				cmd.logWarning("Artifact 'JSZ' is missing for server %s cluster %s", serverName, clusterName)
 				continue
 			} else if err != nil {
@@ -590,6 +607,301 @@ func (cmd *paAnalyzeCmd) checkResourceLimits(r *archive.Reader) (checkStatus, er
 
 	if examples.Count() > 0 {
 		cmd.logIssue("Found servers with high memory/storage usage")
+		cmd.logExamples(examples)
+		return SomeIssues, nil
+	}
+
+	return Pass, nil
+}
+
+// check accounts for high usage of resources limited by account limits, does not check for jetstream limits
+func (cmd *paAnalyzeCmd) checkAccountLimits(r *archive.Reader) (checkStatus, error) {
+
+	type accountLimit struct {
+		description    string
+		usageThreshold float64
+		limit          int64
+		actual         int64
+	}
+
+	examples := newCollectionOfExamples(cmd.examplesLimit)
+	serverTags := r.ListServerTags()
+	typeTag := archive.TagAccounts()
+
+	accountNames := r.GetAccountNames()
+	for _, accountName := range accountNames {
+		accountTag := archive.TagAccount(accountName)
+
+		for _, serverTag := range serverTags {
+
+			var accountInfo server.AccountInfo
+			if err := r.Load(&accountInfo, &serverTag, accountTag, typeTag); errors.Is(err, archive.ErrNoMatches) {
+				cmd.logWarning("AccountInfo is missing for account %s", accountName)
+				continue
+			} else if err != nil {
+				return Skipped, fmt.Errorf("failed to load AccountInfo from server %s for account %s, error: %w", serverTag.Value, accountName, err)
+			}
+
+			if accountInfo.Claim == nil {
+				// account does not have JWT claim
+				continue
+			}
+
+			accountLimits := []accountLimit{
+				{
+					description:    "Connections",
+					usageThreshold: 0.95,
+					limit:          accountInfo.Claim.Limits.Conn,
+					actual:         int64(accountInfo.ClientCnt),
+				},
+				{
+					description:    "Leafnodes",
+					usageThreshold: 0.9,
+					limit:          accountInfo.Claim.Limits.LeafNodeConn,
+					actual:         int64(accountInfo.LeafCnt),
+				},
+				{
+					description:    "Subscriptions",
+					usageThreshold: 1,
+					limit:          accountInfo.Claim.Limits.Subs,
+					actual:         int64(accountInfo.SubCnt),
+				},
+				{
+					description:    "Streams",
+					usageThreshold: 0.9,
+					limit:          accountInfo.Claim.Limits.Streams,
+					actual:         int64(len(r.GetAccountStreamNames(accountName))), // streams that belong to this account
+				},
+			}
+
+			// check all account limits
+			for _, accountLimit := range accountLimits {
+				// skip if limit is disabled or unlimited
+				if accountLimit.limit == 0 || accountLimit.limit == -1 {
+					continue
+				}
+
+				// calculate usage percentage
+				usage := 1.0 - (float64(accountLimit.limit-accountLimit.actual) / float64(accountLimit.limit))
+				if usage > accountLimit.usageThreshold {
+					examples.Addf("%s - %s: %d/%d", accountName, accountLimit.description, accountLimit.actual, accountLimit.limit)
+				}
+			}
+
+		}
+	}
+
+	if examples.Count() > 0 {
+		cmd.logIssue("Found accounts with high usage of limits")
+		cmd.logExamples(examples)
+		return SomeIssues, nil
+	}
+
+	return Pass, nil
+}
+
+// checkStreamLimits checks for streams that are close to their limits set in the stream config
+func (cmd *paAnalyzeCmd) checkStreamLimits(r *archive.Reader) (checkStatus, error) {
+
+	type streamLimit struct {
+		description    string
+		usageThreshold float64
+		limit          int64
+		actual         int64
+	}
+
+	typeTag := archive.TagStreamDetails()
+	accountNames := r.GetAccountNames()
+	examples := newCollectionOfExamples(cmd.examplesLimit)
+
+	for _, accountName := range accountNames {
+		accountTag := archive.TagAccount(accountName)
+		streamNames := r.GetAccountStreamNames(accountName)
+
+		for _, streamName := range streamNames {
+			streamTag := archive.TagStream(streamName)
+
+			serverNames := r.GetStreamServerNames(accountName, streamName)
+			for _, serverName := range serverNames {
+				serverTag := archive.TagServer(serverName)
+
+				var streamDetails server.StreamDetail
+
+				if err := r.Load(&streamDetails, serverTag, accountTag, streamTag, typeTag); errors.Is(err, archive.ErrNoMatches) {
+					cmd.logWarning("Artifact 'STREAM_DETAILS' is missing for stream %s in account %s", streamName, accountName)
+					continue
+				} else if err != nil {
+					return Skipped, fmt.Errorf("failed to load STREAM_DETAILS for stream %s in account %s: %w", streamName, accountName, err)
+				}
+
+				streamLimits := []streamLimit{
+					{
+						description:    "Messages",
+						usageThreshold: 0.95,
+						limit:          streamDetails.Config.MaxMsgs,
+						actual:         int64(streamDetails.State.Msgs),
+					},
+					{
+						description:    "Bytes",
+						usageThreshold: 0.95,
+						limit:          streamDetails.Config.MaxBytes,
+						actual:         int64(streamDetails.State.Bytes),
+					},
+					{
+						description:    "Consumers",
+						usageThreshold: 0.90,
+						limit:          int64(streamDetails.Config.MaxConsumers),
+						actual:         int64(streamDetails.State.Consumers),
+					},
+				}
+
+				for _, streamLimit := range streamLimits {
+					// skip if limit is disabled or unlimited
+					if streamLimit.limit == 0 || streamLimit.limit == -1 {
+						continue
+					}
+
+					// calculate usage percentage
+					usage := 1.0 - (float64(streamLimit.limit-streamLimit.actual) / float64(streamLimit.limit))
+
+					if usage > streamLimit.usageThreshold {
+						examples.Addf("%s/%s - %s: %d/%d", accountName, streamName, streamLimit.description, streamLimit.actual, streamLimit.limit)
+					}
+				}
+			}
+		}
+	}
+
+	if examples.Count() > 0 {
+		cmd.logIssue("Found streams with high usage of limits")
+		cmd.logExamples(examples)
+		return SomeIssues, nil
+	}
+
+	return Pass, nil
+}
+
+func (cmd *paAnalyzeCmd) checkMetaCluster(r *archive.Reader) (checkStatus, error) {
+	examples := newCollectionOfExamples(cmd.examplesLimit)
+
+	clusterTags := r.ListClusterTags()
+	for _, clusterTag := range clusterTags {
+		clusterName := clusterTag.Value
+		serverNames := r.GetClusterServerNames(clusterName)
+
+		for _, serverName := range serverNames {
+
+			var serverJSInfo server.JSInfo
+
+			if err := r.Load(&serverJSInfo, &clusterTag, archive.TagServer(serverName), archive.TagJetStream()); errors.Is(err, archive.ErrNoMatches) {
+				cmd.logWarning("Artifact 'JSZ' is missing for server %s cluster %s", serverName, clusterName)
+				continue
+			} else if err != nil {
+				return Skipped, fmt.Errorf("failed to load JSZ for server %s: %w", serverName, err)
+			}
+
+			if serverJSInfo.Meta == nil {
+				cmd.logDebug("Server %s does not have meta cluster information", serverName)
+				continue
+			}
+
+			for _, replica := range serverJSInfo.Meta.Replicas {
+				if replica.Offline {
+					if replica.Name == serverJSInfo.Meta.Leader {
+						examples.Addf("%s reports leader %s as offline", serverName, replica.Name)
+					} else {
+						examples.Addf("%s reports replica %s as offline", serverName, replica.Name)
+					}
+				}
+				if !replica.Current {
+					examples.Addf("%s reports replica %s as not current", serverName, replica.Name)
+				}
+			}
+
+		}
+	}
+
+	if examples.Count() > 0 {
+		cmd.logIssue("Found unhealthy nodes in meta cluster")
+		cmd.logExamples(examples)
+		return SomeIssues, nil
+	}
+
+	return Pass, nil
+}
+
+func (cmd *paAnalyzeCmd) checkRoutesAndGateways(r *archive.Reader) (checkStatus, error) {
+	examples := newCollectionOfExamples(cmd.examplesLimit)
+
+	type gatewaysInfo struct {
+		numInboundGateways  int
+		numOutboundGateways int
+	}
+
+	clusterNames := r.GetClusterNames()
+	for _, clusterName := range clusterNames {
+		clusterTag := archive.TagCluster(clusterName)
+		serverNames := r.GetClusterServerNames(clusterName)
+
+		numRoutesToServersMap := make(map[int][]string)
+		numInboundGatewaysToServersMap := make(map[int][]string)
+		numOutboundGatewaysToServersMap := make(map[int][]string)
+
+		for _, serverName := range serverNames {
+			serverTag := archive.TagServer(serverName)
+
+			var (
+				routez   server.Routez
+				gateways server.Gatewayz
+			)
+
+			if err := r.Load(&routez, clusterTag, serverTag, archive.TagRoutes()); errors.Is(err, archive.ErrNoMatches) {
+				cmd.logWarning("Artifact 'ROUTEZ' is missing for server %s cluster %s", serverName, clusterName)
+			} else if err != nil {
+				return Skipped, fmt.Errorf("failed to load ROUTEZ for server %s: %w", serverName, err)
+			}
+
+			if err := r.Load(&gateways, clusterTag, serverTag, archive.TagGateways()); errors.Is(err, archive.ErrNoMatches) {
+				cmd.logWarning("Artifact 'GATEWAYZ' is missing for server %s cluster %s", serverName, clusterName)
+			} else if err != nil {
+				return Skipped, fmt.Errorf("failed to load GATEWAYZ for server %s: %w", serverName, err)
+			}
+
+			numRoutesToServersMap[routez.NumRoutes] = append(numRoutesToServersMap[routez.NumRoutes], serverName)
+			numInboundGatewaysToServersMap[len(gateways.InboundGateways)] = append(numInboundGatewaysToServersMap[len(gateways.InboundGateways)], serverName)
+			numOutboundGatewaysToServersMap[len(gateways.OutboundGateways)] = append(numOutboundGatewaysToServersMap[len(gateways.OutboundGateways)], serverName)
+
+		}
+
+		// check for servers with different number of routes and gateways
+		addExample := false
+		str := fmt.Sprintf("Cluster %s:\n", clusterName)
+		if len(numRoutesToServersMap) > 1 {
+			addExample = true
+			for numRoutes, servers := range numRoutesToServersMap {
+				str += fmt.Sprintf("     - %v: %d routes\n", servers, numRoutes)
+			}
+		}
+		if len(numInboundGatewaysToServersMap) > 1 {
+			addExample = true
+			for numInboundGateways, servers := range numInboundGatewaysToServersMap {
+				str += fmt.Sprintf("     - %v: %d inbound gateways\n", servers, numInboundGateways)
+			}
+		}
+		if len(numOutboundGatewaysToServersMap) > 1 {
+			addExample = true
+			for numOutboundGateways, servers := range numOutboundGatewaysToServersMap {
+				str += fmt.Sprintf("     - %v: %d outbound gateways\n", servers, numOutboundGateways)
+			}
+		}
+		if addExample {
+			examples.Addf(str)
+		}
+
+	}
+
+	if examples.Count() > 0 {
+		cmd.logIssue("Found nodes with inconsistent gateways")
 		cmd.logExamples(examples)
 		return SomeIssues, nil
 	}
