@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/nats-io/jwt/v2"
-	"github.com/nats-io/natscli/columns"
+	"github.com/mprimi/natscli/columns"
 	ab "github.com/synadia-io/jwt-auth-builder.go"
 	"sort"
 	"strings"

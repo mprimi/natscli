@@ -21,7 +21,7 @@ import (
 
 	"github.com/choria-io/fisk"
 	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/natscli/archive"
+	"github.com/mprimi/natscli/archive"
 )
 
 type auditAnalyzeCmd struct {
