@@ -42,15 +42,6 @@ jobs:
           set -e
           go test -v --failfast -p=1 ./...
 
-      - name: Create GitHub App Token
-        id: token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.NATSIO_ARTIFACT_CROSS_REPO_PUSHER_APP_ID }}
-          private-key: ${{ secrets.NATSIO_ARTIFACT_CROSS_REPO_PUSHER_PRIVATE_KEY }}
-          owner: "nats-io"
-          repositories: "homebrew-nats-tools"
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v5
         with:
