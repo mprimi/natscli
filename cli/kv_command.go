@@ -27,9 +27,9 @@ import (
 	"github.com/choria-io/fisk"
 	"github.com/dustin/go-humanize"
 	"github.com/fatih/color"
+	"github.com/mprimi/natscli/columns"
 	"github.com/nats-io/jsm.go"
 	"github.com/nats-io/nats.go"
-	"github.com/mprimi/natscli/columns"
 	"golang.org/x/term"
 )
 

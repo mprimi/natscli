@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/mprimi/natscli/cli"
+	"github.com/nats-io/nats.go"
 )
 
 func init() {
