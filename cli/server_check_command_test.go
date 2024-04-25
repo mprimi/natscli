@@ -21,11 +21,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mprimi/natscli/monitor"
 	"github.com/nats-io/jsm.go"
 	"github.com/nats-io/jsm.go/api"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/natscli/monitor"
 )
 
 func assertHasPDItem(t *testing.T, check *monitor.Result, items ...string) {

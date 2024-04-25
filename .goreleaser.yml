@@ -2,7 +2,7 @@ project_name: natscli
 
 release:
   github:
-    owner: nats-io
+    owner: mprimi
     name: natscli
   name_template: "Release {{.Version}}"
   draft: true

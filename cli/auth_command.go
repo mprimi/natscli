@@ -21,8 +21,8 @@ import (
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
-	"github.com/nats-io/natscli/columns"
-	au "github.com/nats-io/natscli/internal/auth"
+	"github.com/mprimi/natscli/columns"
+	au "github.com/mprimi/natscli/internal/auth"
 	ab "github.com/synadia-io/jwt-auth-builder.go"
 )
 

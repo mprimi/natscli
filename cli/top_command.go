@@ -17,8 +17,8 @@ import (
 	"fmt"
 
 	"github.com/choria-io/fisk"
+	"github.com/mprimi/natscli/top"
 	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/natscli/top"
 	ui "gopkg.in/gizak/termui.v1"
 )
 

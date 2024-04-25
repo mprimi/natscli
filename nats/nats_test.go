@@ -27,10 +27,10 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/mprimi/natscli/cli"
 	"github.com/nats-io/jsm.go/api"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/natscli/cli"
 
 	"github.com/nats-io/jsm.go"
 )

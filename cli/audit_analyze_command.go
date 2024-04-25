@@ -20,8 +20,8 @@ import (
 	"sort"
 
 	"github.com/choria-io/fisk"
+	"github.com/mprimi/natscli/archive"
 	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/natscli/archive"
 )
 
 type auditAnalyzeCmd struct {

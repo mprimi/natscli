@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/choria-io/fisk"
+	"github.com/mprimi/natscli/columns"
 	"github.com/nats-io/nats-server/v2/server"
-	"github.com/nats-io/natscli/columns"
 )
 
 type srvAccountCommand struct {

@@ -2,7 +2,7 @@ package cli
 
 import (
 	"fmt"
-	au "github.com/nats-io/natscli/internal/auth"
+	au "github.com/mprimi/natscli/internal/auth"
 	"io"
 	"os"
 	"sort"

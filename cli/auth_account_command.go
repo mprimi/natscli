@@ -16,7 +16,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	au "github.com/nats-io/natscli/internal/auth"
+	au "github.com/mprimi/natscli/internal/auth"
 	"io"
 	"net/url"
 	"os"

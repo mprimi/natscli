@@ -37,10 +37,10 @@ import (
 	"github.com/emicklei/dot"
 	"github.com/google/go-cmp/cmp"
 	"github.com/gosuri/uiprogress"
+	"github.com/mprimi/natscli/columns"
 	"github.com/nats-io/jsm.go"
 	"github.com/nats-io/jsm.go/api"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/natscli/columns"
 	"gopkg.in/yaml.v3"
 )
 

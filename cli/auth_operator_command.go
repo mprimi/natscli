@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"github.com/choria-io/appbuilder/forms"
 	"github.com/ghodss/yaml"
-	au "github.com/nats-io/natscli/internal/auth"
+	au "github.com/mprimi/natscli/internal/auth"
 	"io"
 	"net/url"
 	"os"
