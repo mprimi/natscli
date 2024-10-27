@@ -22,12 +22,3 @@ func configureObserveCommand(app commandHost) {
 func init() {
 	registerCommand("observe", 20, configureObserveCommand)
 }
-
-//type observeMetadata struct {
-//	Timestamp              time.Time `json:"capture_timestamp"`
-//	ConnectedServerName    string    `json:"connected_server_name"`
-//	ConnectedServerVersion string    `json:"connected_server_version"`
-//	ConnectURL             string    `json:"connect_url"`
-//	UserName               string    `json:"user_name"`
-//	CLIVersion             string    `json:"cli_version"`
-//}
